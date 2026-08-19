@@ -62,21 +62,32 @@ export function createDrizzleUsageEventRepository(db: Db) {
       const candidates = [...unique.values()]
       for (let i = 0; i < candidates.length; i += INSERT_CHUNK) {
         const chunk = candidates.slice(i, i + INSERT_CHUNK)
-        // 2. drop ids already stored (any customer, any time) — eventId is the global dedup key
-        const existing = await db
-          .select({ eventId: usageEvents.eventId })
-          .from(usageEvents)
-          .where(inArray(usageEvents.eventId, chunk.map((e) => e.eventId)))
-        const known = new Set(existing.map((r) => r.eventId))
-        const fresh = chunk.filter((e) => !known.has(e.eventId))
-        if (fresh.length === 0) continue
-        // 3. insert; the unique (event_id, occurred_at) index covers concurrent writers
-        const rows = await db
-          .insert(usageEvents)
-          .values(fresh.map(toRow))
-          .onConflictDoNothing({ target: [usageEvents.eventId, usageEvents.occurredAt] })
-          .returning({ id: usageEvents.id })
-        inserted += rows.length
+        // Sorted so two overlapping batches always lock in the same order (no deadlocks)
+        const eventIds = chunk.map((e) => e.eventId).sort()
+        inserted += await db.transaction(async (tx) => {
+          // 2. serialize concurrent writers per eventId: the unique index includes the partition
+          //    column (hypertable rule), so the same eventId at two timestamps would not conflict.
+          const idList = sql.join(
+            eventIds.map((id) => sql`${id}`),
+            sql`, `,
+          )
+          await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(event_id)) FROM unnest(ARRAY[${idList}]::text[]) AS t(event_id)`)
+          // 3. drop ids already stored (any customer, any time) — eventId is the global dedup key
+          const existing = await tx
+            .select({ eventId: usageEvents.eventId })
+            .from(usageEvents)
+            .where(inArray(usageEvents.eventId, eventIds))
+          const known = new Set(existing.map((r) => r.eventId))
+          const fresh = chunk.filter((e) => !known.has(e.eventId))
+          if (fresh.length === 0) return 0
+          // 4. insert; the unique (event_id, occurred_at) index still guards identical rows
+          const rows = await tx
+            .insert(usageEvents)
+            .values(fresh.map(toRow))
+            .onConflictDoNothing({ target: [usageEvents.eventId, usageEvents.occurredAt] })
+            .returning({ id: usageEvents.id })
+          return rows.length
+        })
       }
       return { inserted, duplicates: events.length - inserted }
     },

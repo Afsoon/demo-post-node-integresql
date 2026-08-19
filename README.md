@@ -96,8 +96,9 @@ it('creates a customer', async () => {
 }) // MSW closed + clone released here, no beforeEach/afterEach
 ```
 
-- Spec style: `describe('<feature>') › describe('GIVEN <precondition>') › it('WHEN <action> THEN <outcome>')`, bodies split into `// Arrange` (always `await using api = await TestApi.start()` + helpers from `test/support/fixtures.ts`: `givenCustomer`, `givenBillableCustomer`, `givenIngestedEvents`, `event`, `polarCalls`…), `// Act` (one call) and `// Assert` (one outcome).
-- Failure injection per instance: `api.polar.use(http.post(`${api.polar.baseUrl}/v1/customers/`, () => HttpResponse.json({}, { status: 500 })))` — overrides die with the instance (`test/polar-failures.test.ts`).
+- Spec style: `describe('<feature>') › describe('GIVEN <precondition>') › it('WHEN <action> THEN <outcome>')`; bodies are Arrange / Act / Assert blocks separated by blank lines (no comments). Preconditions are created **through the API** with the `given*` helpers in `test/support/fixtures.ts`; raw SQL (`sql*` helpers) only for states the API cannot produce (idempotency row in flight / expired). Request payloads come from `test/factories/` (`customerBody`, `billingProfileBody`, `usageEventBody`, `usageBatch`, `reportQuery`, …), typed from the RPC client so they follow the API contract.
+- Stress suite `test/test/parallel/` (8 files): 1000-event batches, 600+ event syncs, 100-way `Promise.all` fan-outs, idempotency/delete races, instance churn. One live `TestApi` per spec (MSW shares one interceptor per worker thread), parallelism comes from worker threads: `pnpm test` ≈ 13s vs `pnpm vitest run --maxWorkers=1` ≈ 29s on 10 cores. The suite found and fixed a dedup race (advisory lock per eventId in `insertMany`) and float drift in `syncedQuantity`.
+- Failure injection per instance: `api.polar.use(http.post(`${api.polar.baseUrl}/v1/customers/`, () => HttpResponse.json({}, { status: 500 })))` — overrides die with the instance (`test/test/polar-failures.test.ts`).
 
 ## Migrations
 

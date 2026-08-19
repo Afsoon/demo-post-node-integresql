@@ -1,14 +1,24 @@
+import { createHash } from 'node:crypto'
+import { sql } from 'drizzle-orm'
+import { HttpResponse, http } from 'msw'
+import {
+  type BillingProfileBody,
+  type CustomerBody,
+  type SyncPeriodBody,
+  type UsageEventBody,
+  billingProfileBody,
+  customerBody,
+  idempotencyKey,
+} from '../factories/index.ts'
 import type { TestApi } from './api.ts'
 
 /**
- * Arrange helpers ("GIVEN …"). They never assert: an unexpected status throws,
- * so a broken precondition fails loudly instead of producing a misleading test result.
+ * "GIVEN …" helpers: preconditions created through the API. They never assert — an unexpected
+ * status throws, so a broken precondition fails loudly instead of producing a misleading result.
+ * The few `sql*` helpers cover states the API cannot produce (idempotency row lifecycle).
  */
 
-type Client = TestApi['client']
-type CustomerBody = Parameters<Client['customers']['$post']>[0]['json']
-type BillingProfileBody = Parameters<Client['customers'][':customerId']['billing-profile']['$post']>[0]['json']
-type UsageEventBody = Parameters<Client['webhooks']['usage-events']['$post']>[0]['json'][number]
+export const UNKNOWN_ID = '00000000-0000-7000-8000-000000000000'
 
 async function expectStatus<T extends Response>(response: T, status: number, what: string) {
   if (response.status !== status) {
@@ -17,63 +27,107 @@ async function expectStatus<T extends Response>(response: T, status: number, wha
   return response
 }
 
-export const defaultCustomer: CustomerBody = { email: 'ada@example.com', name: 'Ada Lovelace', type: 'individual' }
-
 export async function givenCustomer(api: TestApi, overrides: Partial<CustomerBody> = {}) {
-  const response = await api.client.customers.$post({ json: { ...defaultCustomer, ...overrides } })
+  const response = await api.client.customers.$post({ json: customerBody(overrides) })
   return (await expectStatus(response, 201, 'givenCustomer')).json()
 }
 
-export const defaultBillingProfile: BillingProfileBody = {
-  company: {
-    legalName: 'Ada Ltd',
-    billingEmail: 'billing@ada.io',
-    address: { line1: '1 Main St', city: 'London', postalCode: 'E1', country: 'gb' },
-  },
-  limits: { monthlyEventLimit: 10, rateLimitPerMinute: 60 },
-  pricing: { plan: 'pro', currency: 'eur', pricePerUnitCents: 7 },
-}
-
-export async function givenBillingProfile(api: TestApi, customerId: string, overrides: Partial<BillingProfileBody> = {}) {
-  const response = await api.client.customers[':customerId']['billing-profile'].$post({
-    param: { customerId },
-    json: { ...defaultBillingProfile, ...overrides },
-  })
-  return (await expectStatus(response, 201, 'givenBillingProfile')).json()
-}
-
-/** A customer mirrored in Polar with a pro billing profile: the common starting point for usage specs. */
-export async function givenBillableCustomer(api: TestApi) {
-  const customer = await givenCustomer(api)
-  await givenBillingProfile(api, customer.id)
+/** Polar fails once → the row is stored without `polarCustomerId` (retryable by design). */
+export async function givenUnlinkedCustomer(api: TestApi, overrides: Partial<CustomerBody> = {}) {
+  api.polar.use(
+    http.post(`${api.polar.baseUrl}/v1/customers/`, () => HttpResponse.json({ detail: 'down' }, { status: 500 }), {
+      once: true,
+    }),
+  )
+  const body = customerBody(overrides)
+  await expectStatus(await api.client.customers.$post({ json: body }), 502, 'givenUnlinkedCustomer')
+  const list = await (await api.client.customers.$get({ query: { limit: '100' } })).json()
+  const customer = list.items.find((c) => c.email === body.email.toLowerCase() && c.polarCustomerId === null)
+  if (!customer) throw new Error('fixture givenUnlinkedCustomer: no unlinked customer found')
   return customer
 }
 
-let eventCounter = 0
-
-/** Usage event payload builder with a unique eventId per call. */
-export function event(customerId: string, overrides: Partial<UsageEventBody> = {}) {
-  eventCounter += 1
-  const body: UsageEventBody = { customerId, eventName: 'api_call', eventId: `evt-${eventCounter}`, ...overrides }
-  return body
+export async function givenBillingProfile(api: TestApi, customerId: string, body: BillingProfileBody = billingProfileBody()) {
+  const response = await api.client.customers[':customerId']['billing-profile'].$post({ param: { customerId }, json: body })
+  return (await expectStatus(response, 201, 'givenBillingProfile')).json()
 }
 
-export async function givenIngestedEvents(api: TestApi, events: UsageEventBody[], idempotencyKey: string = crypto.randomUUID()) {
-  const response = await api.client.webhooks['usage-events'].$post(
-    { json: events },
-    { headers: { 'x-idempotency-id': idempotencyKey } },
-  )
+/** A customer mirrored in Polar with a pro billing profile (7 cents/unit, limit 10). */
+export async function givenBillableCustomer(api: TestApi, profile: BillingProfileBody = billingProfileBody()) {
+  const customer = await givenCustomer(api)
+  await givenBillingProfile(api, customer.id, profile)
+  return customer
+}
+
+export async function givenIngestedEvents(api: TestApi, events: UsageEventBody[], key: string = idempotencyKey()) {
+  const response = await api.client.webhooks['usage-events'].$post({ json: events }, { headers: { 'x-idempotency-id': key } })
   return (await expectStatus(response, 200, 'givenIngestedEvents')).json()
 }
 
 /** Marks every event of the period as synced (and charges it), so the next sync has nothing to do. */
-export async function givenSyncedUsage(api: TestApi, customerId: string, period: { start: string; end: string }) {
+export async function givenSyncedUsage(api: TestApi, customerId: string, period: SyncPeriodBody) {
   const response = await api.client.customers[':customerId'].usage.sync.$post({ param: { customerId }, json: period })
   return (await expectStatus(response, 200, 'givenSyncedUsage')).json()
 }
 
-/** Wide period covering every event ingested "now" during a test run. */
-export const thisYear = { start: '2026-01-01T00:00:00Z', end: '2026-12-31T00:00:00Z' }
-
 /** `METHOD /path` of every call Polar received, in order. */
 export const polarCalls = (api: TestApi) => api.polar.requests.map((r) => `${r.method} ${r.url}`)
+
+// ---- raw SQL: idempotency row states unreachable through the API ----
+
+/** Same hash the middleware computes: sha256 of the exact bytes the client sends (JSON.stringify). */
+const bodyHash = (body: unknown) => createHash('sha256').update(JSON.stringify(body)).digest('hex')
+
+/** A request with this key+body is "still being processed" (e.g. a crashed worker). */
+export async function sqlMarkIdempotencyKeyProcessing(api: TestApi, key: string, body: unknown) {
+  await api.db.execute(sql`
+    INSERT INTO webhook_idempotency_keys (key, request_hash, status, expires_at)
+    VALUES (${key}, ${bodyHash(body)}, 'processing', now() + interval '72 hours')
+  `)
+}
+
+/** Time travel: the stored response for this key is older than the 72h window. */
+export async function sqlExpireIdempotencyKey(api: TestApi, key: string) {
+  await api.db.execute(sql`UPDATE webhook_idempotency_keys SET expires_at = now() - interval '1 hour' WHERE key = ${key}`)
+}
+
+export async function sqlIdempotencyKeyTtlHours(api: TestApi, key: string) {
+  const result = await api.db.execute<{ hours: string }>(sql`
+    SELECT extract(epoch FROM (expires_at - created_at)) / 3600 AS hours
+    FROM webhook_idempotency_keys WHERE key = ${key}
+  `)
+  return Number(result.rows[0]?.hours)
+}
+
+/** Simulates a crash between the Polar ingest and `markSynced`: events look unsynced again. */
+export async function sqlUnmarkSynced(api: TestApi, customerId: string) {
+  await api.db.execute(sql`UPDATE usage_events SET polar_synced_at = NULL WHERE customer_id = ${customerId}`)
+}
+
+// ---- read-only DB peeks for facts the API does not expose ----
+
+export async function sqlCountUsageEvents(api: TestApi, customerId: string) {
+  const result = await api.db.execute<{ n: string }>(sql`SELECT count(*)::text AS n FROM usage_events WHERE customer_id = ${customerId}`)
+  return Number(result.rows[0]?.n)
+}
+
+export async function sqlCountSettlements(api: TestApi, customerId: string) {
+  const result = await api.db.execute<{ n: string }>(
+    sql`SELECT count(*)::text AS n FROM usage_settlements WHERE customer_id = ${customerId}`,
+  )
+  return Number(result.rows[0]?.n)
+}
+
+// ---- fan-out helpers for the stress suite ----
+
+export async function givenCustomers(api: TestApi, count: number) {
+  return Promise.all(Array.from({ length: count }, () => givenCustomer(api)))
+}
+
+export async function givenBillableCustomers(api: TestApi, count: number, profile: BillingProfileBody = billingProfileBody()) {
+  return Promise.all(Array.from({ length: count }, () => givenBillableCustomer(api, profile)))
+}
+
+/** Counts responses by status: `{ 200: 3, 409: 7 }`. */
+export const statusHistogram = (responses: Response[]) =>
+  responses.reduce<Record<number, number>>((acc, r) => ({ ...acc, [r.status]: (acc[r.status] ?? 0) + 1 }), {})

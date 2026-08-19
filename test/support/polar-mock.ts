@@ -59,14 +59,29 @@ export function createPolarMock({ baseUrl = POLAR_SANDBOX_URL } = {}) {
   }
   const requests: RecordedRequest[] = []
 
+  /**
+   * MSW passes the same Request object down the handler chain, so the body is read from a clone:
+   * the original stays readable for any later handler, and a body consumed earlier is reported
+   * with an actionable error instead of MSW's generic "handler lookup" failure.
+   */
+  async function readJsonBody(request: Request) {
+    if (request.bodyUsed) {
+      throw new Error(
+        `Polar mock: body of ${request.method} ${new URL(request.url).pathname} was already consumed by an earlier handler. ` +
+          'Overrides that inspect the body must read it from `request.clone()`.',
+      )
+    }
+    const text = await request.clone().text()
+    return text ? (JSON.parse(text) as Json) : undefined
+  }
+
   /** Records the call, then delegates — keeps handlers focused on behaviour. */
   const record =
     <P extends Record<string, string>>(resolver: (info: { params: P; body: Json }) => Response | Promise<Response>) =>
     (async ({ request, params }) => {
-      const text = await request.text()
-      const body = text ? (JSON.parse(text) as Json) : {}
-      requests.push({ method: request.method, url: new URL(request.url).pathname, body: text ? body : undefined })
-      return resolver({ params: params as P, body })
+      const body = await readJsonBody(request)
+      requests.push({ method: request.method, url: new URL(request.url).pathname, body })
+      return resolver({ params: params as P, body: body ?? {} })
     }) satisfies HttpResponseResolver
 
   const handlers = [

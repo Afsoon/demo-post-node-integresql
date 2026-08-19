@@ -33,16 +33,18 @@ export function createSyncUsage({ usageEvents, usageSettlements, customers, bill
     }
 
     let syncedEvents = 0
-    let syncedQuantity = 0
+    // Quantities are numeric(18,6): accumulate in micro-units to avoid float drift over big batches
+    let syncedMicroUnits = 0
     for (;;) {
       const batch = await usageEvents.findUnsynced(customerId, period, SYNC_BATCH)
       if (batch.length === 0) break
       await billingProvider.ingestEvents(batch.map((event) => ({ ...event, externalCustomerId: customerId })))
       await usageEvents.markSynced(batch, new Date())
       syncedEvents += batch.length
-      syncedQuantity += batch.reduce((acc, e) => acc + e.quantity, 0)
+      syncedMicroUnits += batch.reduce((acc, e) => acc + Math.round(e.quantity * 1_000_000), 0)
       if (batch.length < SYNC_BATCH) break
     }
+    const syncedQuantity = syncedMicroUnits / 1_000_000
 
     const profile = await billingProfiles.findByCustomerId(customerId)
     const unitPrice = profile && profile.pricing.plan !== 'free' ? profile.pricing.pricePerUnitCents : 0

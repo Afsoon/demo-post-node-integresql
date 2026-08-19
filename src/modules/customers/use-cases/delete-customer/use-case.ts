@@ -22,7 +22,8 @@ export function createDeleteCustomer({ customers, billingProvider, settleUsage }
 
     // Provider first: if Polar rejects, our row stays and the call can be retried.
     if (customer.polarCustomerId) await billingProvider.delete(customer.polarCustomerId)
-    await customers.delete(id)
+    // A concurrent delete may have won the race: only the caller that removed the row reports success.
+    if (!(await customers.delete(id))) throw new NotFoundError('customer', id)
 
     return { customerId: id, settlement }
   }

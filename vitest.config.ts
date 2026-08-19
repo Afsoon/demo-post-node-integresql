@@ -11,7 +11,7 @@ const pick = (...keys: string[]) =>
 
 export default defineConfig({
   test: {
-    include: ['test/**/*.test.ts'],
+    include: ['test/test/**/*.test.ts'],
     globalSetup: ['test/globalSetup.ts'],
     env: pick('API_TOKEN', 'POLAR_ENVIRONMENT', 'POLAR_ACCESS_TOKEN', 'POLAR_PRODUCT_ID'),
     fileParallelism: true,
