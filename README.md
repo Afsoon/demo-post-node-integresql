@@ -106,7 +106,15 @@ it("creates a customer", async () => {
 
 ## CI
 
-`.github/workflows/ci.yml` runs on pushes to `main` and on pull requests: `pnpm install --frozen-lockfile` → `pnpm typecheck` → migration drift check (`drizzle-kit generate` must produce nothing) → pre-pull of the TimescaleDB/integresql images → `pnpm test`. `ubuntu-latest` ships Docker, so testcontainers works unchanged; `TESTCONTAINERS_REUSE_ENABLE=false` is set in the job (`.env.test` never overrides existing variables) so every run gets fresh containers that the reaper removes. Container logs are dumped on failure. Replace `OWNER/REPO` in the badge above once the repo is on GitHub.
+`.github/workflows/ci.yml` runs on pushes to `main` and on pull requests, as three parallel lanes:
+
+```
+check   typecheck → drizzle drift check (no Docker)
+test    matrix shard 1..3 → containers → vitest run --shard=i/3 --reporter=blob → upload .vitest-reports/
+report  needs test (always) → download blobs → vitest run --merge-reports  (one summary, fails if any shard failed)
+```
+
+Each shard boots its own TimescaleDB + integresql on its runner. Change the shard count in one place (`env.SHARDS` + the matrix). Local sharding is not used: on one machine it only doubles the setup for the same cores (measured slower). `ubuntu-latest` ships Docker, so testcontainers works unchanged; `TESTCONTAINERS_REUSE_ENABLE=false` is set in the job (`.env.test` never overrides existing variables) so every run gets fresh containers that the reaper removes. Container logs are dumped on failure. Replace `OWNER/REPO` in the badge above once the repo is on GitHub.
 
 On Linux runners the workers talk to Postgres over its **unix socket**: the job creates `$RUNNER_TEMP/pgsock` (mode 1777), exports `TEST_PG_SOCKET_DIR`, and `test/globalSetup.ts` bind-mounts it as `/var/run/postgresql` on both containers instead of the named volume; `test/support/database.ts` then builds `postgresql://…@/db?host=<dir>` URLs. Locally on macOS the variable stays unset (Docker Desktop's VM does not carry unix sockets to the host) and the mapped TCP port is used — the setup log prints which mode is active. `VITEST_MAX_WORKERS` overrides the `cpus/2` default for CI experiments.
 

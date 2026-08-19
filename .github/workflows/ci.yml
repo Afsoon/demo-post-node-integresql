@@ -9,34 +9,53 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  SHARDS: 3
+
 jobs:
-  test:
-    name: typecheck · migrations · tests (testcontainers)
+  check:
+    name: typecheck · migrations
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    env:
-      CI: "true"
-      TESTCONTAINERS_REUSE_ENABLE: "false"
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-
       - uses: pnpm/action-setup@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version-file: .node-version
           cache: pnpm
-
       - run: pnpm install --frozen-lockfile
-
       - run: pnpm typecheck
-
       - name: Check migrations are in sync with the drizzle schema
+        # `generate` only diffs the schema against the last snapshot (no DB). Anything it would
+        # write means someone changed src/infra/db/schema without generating a migration.
         run: |
           pnpm drizzle-kit generate --name ci-drift-check
           if [ -n "$(git status --porcelain drizzle)" ]; then
             echo "::error::drizzle schema and migrations are out of sync:"; git status --porcelain drizzle; exit 1
           fi
+
+  test:
+    name: tests (shard ${{ matrix.shard }}/3)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    env:
+      CI: "true"
+      # .env.test is loaded with process.loadEnvFile, which never overrides variables already set:
+      # fresh containers per run here, the testcontainers reaper cleans them up.
+      TESTCONTAINERS_REUSE_ENABLE: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
 
       - name: Postgres unix socket dir for the test workers (Linux only)
         # The alpine Postgres in the container runs as uid 70 and must create the socket here;
@@ -46,12 +65,23 @@ jobs:
           echo "TEST_PG_SOCKET_DIR=$RUNNER_TEMP/pgsock" >> "$GITHUB_ENV"
 
       - name: Pre-pull test images
+        # keeps image pulls out of vitest's globalSetup hookTimeout
         run: |
           docker pull timescale/timescaledb:2.29.2-pg18 &
           docker pull ghcr.io/allaboutapps/integresql:v1.1.0 &
           wait
 
-      - run: pnpm test
+      - name: Run shard
+        # blob reporter → .vitest-reports/blob-<i>-<n>.json, merged by the `report` job;
+        # the default reporter keeps live output in this job's log.
+        run: pnpm vitest run --shard=${{ matrix.shard }}/${{ env.SHARDS }} --reporter=blob --reporter=default
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: blob-${{ matrix.shard }}
+          path: .vitest-reports/
+          retention-days: 3
 
       - name: Container logs (on failure)
         if: failure()
@@ -60,3 +90,26 @@ jobs:
           for c in $(docker ps -aq --filter label=demo.blog.service=metered); do
             echo "===== $c"; docker logs "$c" 2>&1 | tail -200
           done
+
+  report:
+    name: merged test report
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: blob-*
+          path: .vitest-reports
+          merge-multiple: true
+      - name: Merge shard reports
+        # prints one summary for the whole suite and exits non-zero if any shard had failures
+        run: pnpm vitest run --merge-reports
