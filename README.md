@@ -1,5 +1,7 @@
 # Metered usage service — demo for integresql + MSW + vitest
 
+[![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/ci.yml)
+
 Small but realistic Node/TypeScript microservice used as the playground for a blog post on
 testing with [integresql](https://github.com/allaboutapps/integresql) and [MSW](https://mswjs.io).
 
@@ -99,6 +101,10 @@ it('creates a customer', async () => {
 - Spec style: `describe('<feature>') › describe('GIVEN <precondition>') › it('WHEN <action> THEN <outcome>')`; bodies are Arrange / Act / Assert blocks separated by blank lines (no comments). Preconditions are created **through the API** with the `given*` helpers in `test/support/fixtures.ts`; raw SQL (`sql*` helpers) only for states the API cannot produce (idempotency row in flight / expired). Request payloads come from `test/factories/` (`customerBody`, `billingProfileBody`, `usageEventBody`, `usageBatch`, `reportQuery`, …), typed from the RPC client so they follow the API contract.
 - Stress suite `test/test/parallel/` (8 files): 1000-event batches, 600+ event syncs, 100-way `Promise.all` fan-outs, idempotency/delete races, instance churn. One live `TestApi` per spec (MSW shares one interceptor per worker thread), parallelism comes from worker threads: `pnpm test` ≈ 13s vs `pnpm vitest run --maxWorkers=1` ≈ 29s on 10 cores. The suite found and fixed a dedup race (advisory lock per eventId in `insertMany`) and float drift in `syncedQuantity`.
 - Failure injection per instance: `api.polar.use(http.post(`${api.polar.baseUrl}/v1/customers/`, () => HttpResponse.json({}, { status: 500 })))` — overrides die with the instance (`test/test/polar-failures.test.ts`).
+
+## CI
+
+`.github/workflows/ci.yml` runs on pushes to `main` and on pull requests: `pnpm install --frozen-lockfile` → `pnpm typecheck` → migration drift check (`drizzle-kit generate` must produce nothing) → pre-pull of the TimescaleDB/integresql images → `pnpm test`. `ubuntu-latest` ships Docker, so testcontainers works unchanged; `TESTCONTAINERS_REUSE_ENABLE=false` is set in the job (`.env.test` never overrides existing variables) so every run gets fresh containers that the reaper removes. Container logs are dumped on failure. Replace `OWNER/REPO` in the badge above once the repo is on GitHub.
 
 ## Migrations
 

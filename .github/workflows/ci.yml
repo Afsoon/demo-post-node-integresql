@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: typecheck · migrations · tests (testcontainers)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CI: "true"
+      TESTCONTAINERS_REUSE_ENABLE: "false"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm typecheck
+
+      - name: Check migrations are in sync with the drizzle schema
+        run: |
+          pnpm drizzle-kit generate --name ci-drift-check
+          if [ -n "$(git status --porcelain drizzle)" ]; then
+            echo "::error::drizzle schema and migrations are out of sync:"; git status --porcelain drizzle; exit 1
+          fi
+
+      - name: Pre-pull test images
+        run: |
+          docker pull timescale/timescaledb:2.29.2-pg18 &
+          docker pull ghcr.io/allaboutapps/integresql:v1.1.0 &
+          wait
+
+      - run: pnpm test
+
+      - name: Container logs (on failure)
+        if: failure()
+        run: |
+          docker ps -a --filter label=demo.blog.service=metered
+          for c in $(docker ps -aq --filter label=demo.blog.service=metered); do
+            echo "===== $c"; docker logs "$c" 2>&1 | tail -200
+          done
