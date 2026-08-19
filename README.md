@@ -83,19 +83,21 @@ pnpm test          # or pnpm test:watch
 ```
 
 - `vitest.config.ts` loads `.env.test` with Node's `process.loadEnvFile` (no dotenv) and forwards the keys to worker threads via `test.env`.
-- `test/globalSetup.ts` (runs once): starts TimescaleDB + [integresql](https://github.com/allaboutapps/integresql) with testcontainers (shared unix-socket volume, random host ports, `withReuse()` — set `TESTCONTAINERS_REUSE_ENABLE=true`, already in `.env.test`), hashes `drizzle/**` into a template hash and migrates the template database with `runMigrations` from `src/infra/db/migrate.ts`. Only serializable values are `provide`d to workers.
+- `test/globalSetup.ts` (runs once): starts TimescaleDB + [integresql](https://github.com/allaboutapps/integresql) with testcontainers (shared unix-socket volume, random host ports, `withReuse()` — set `TESTCONTAINERS_REUSE_ENABLE=true`, already in `.env.test`), hashes `drizzle/**` into a template hash and migrates the template database with `runMigrations` from `src/infra/db/migrate.ts`. Only serializable values are `provide`d to workers. The test database lives on **tmpfs** (RAM, never fills the Docker disk), runs with `timescaledb.max_background_workers=0` (no scheduler per cloned DB), integresql's pool is capped at 96 clones, and templates of older schema hashes are discarded automatically.
 - `test/support/database.ts` leases a clone of the template per test (`getTestDatabase`) and recreates it on release.
 - `test/support/polar-mock.ts` — stateful in-memory double of the Polar endpoints we use (`/v1/customers/`, `/v1/events/ingest`, `/v1/orders/` + `/finalize`) served by an [MSW](https://mswjs.io) server. Local traffic (`http://127.0.0.1*`, `http://localhost*` → integresql API) passes through; any other URL throws (`onUnhandledRequest: 'error'`).
 - `test/support/api.ts` — `TestApi`: own DB clone + **own MSW server** + container wired exactly like dev (`createBillingProviderFromEnv` → real Polar SDK adapters with the fake credentials from `.env.test`) + in-process Hono app (`hono/testing` `testClient`, fully typed RPC, no listening port) + auth header. It implements `Symbol.asyncDispose` (closes MSW, releases the clone), so tests read:
 
 ```ts
-it('creates a customer', async () => {
-  await using api = await TestApi.start()
-  const res = await api.client.customers.$post({ json: { email: 'ada@example.com', name: 'Ada', type: 'individual' } })
-  expect(res.status).toBe(201)
-  expect(api.polar.state.customers.size).toBe(1)          // what Polar "received"
-  expect(api.polar.requests[0]).toMatchObject({ method: 'POST', url: '/v1/customers/' })
-}) // MSW closed + clone released here, no beforeEach/afterEach
+it("creates a customer", async () => {
+  await using api = await TestApi.start();
+  const res = await api.client.customers.$post({
+    json: { email: "ada@example.com", name: "Ada", type: "individual" },
+  });
+  expect(res.status).toBe(201);
+  expect(api.polar.state.customers.size).toBe(1); // what Polar "received"
+  expect(api.polar.requests[0]).toMatchObject({ method: "POST", url: "/v1/customers/" });
+}); // MSW closed + clone released here, no beforeEach/afterEach
 ```
 
 - Spec style: `describe('<feature>') › describe('GIVEN <precondition>') › it('WHEN <action> THEN <outcome>')`; bodies are Arrange / Act / Assert blocks separated by blank lines (no comments). Preconditions are created **through the API** with the `given*` helpers in `test/support/fixtures.ts`; raw SQL (`sql*` helpers) only for states the API cannot produce (idempotency row in flight / expired). Request payloads come from `test/factories/` (`customerBody`, `billingProfileBody`, `usageEventBody`, `usageBatch`, `reportQuery`, …), typed from the RPC client so they follow the API contract.

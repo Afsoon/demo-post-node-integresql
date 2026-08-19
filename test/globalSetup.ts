@@ -1,4 +1,5 @@
 import { IntegreSQLClient } from "@devoxa/integresql-client";
+import { Client } from "pg";
 import { GenericContainer, type StartedTestContainer, Wait } from "testcontainers";
 import type { TestProject } from "vitest/node";
 import { createDb } from "../src/infra/db/client.ts";
@@ -15,6 +16,7 @@ const TIMESCALE_ENV = { user: "metered", password: "metered", database: "metered
 
 const TIMESCALE_SOCKET_VOLUME = "metered-test-pgsock";
 const TIMESCALE_SOCKET_DIR = "/var/run/postgresql";
+const TIMESCALE_DATA_DIR = "/var/lib/postgresql";
 
 const SCHEMA_FILES = ["drizzle/**/*.sql", "drizzle/**/*.json"];
 
@@ -33,6 +35,10 @@ export default async function setup(project: TestProject) {
   const url = `http://${integresql.getHost()}:${integresql.getMappedPort(INTEGRESQL_CONTAINER_PORT)}`;
   const client = new IntegreSQLClient({ url });
   const templateHash = await client.hashFiles(SCHEMA_FILES);
+
+  if (await hasStaleTemplates({ host, port, currentHash: templateHash })) {
+    await client.api.discardAllTemplates();
+  }
 
   await client.initializeTemplate(templateHash, async (templateConfig) => {
     const { db, pool } = createDb(
@@ -83,9 +89,9 @@ function startTimescale() {
         "-c",
         "summarize_wal=off",
         "-c",
-        "checkpoint_timeout=30min",
+        "checkpoint_timeout=5min",
         "-c",
-        "max_wal_size=4GB",
+        "max_wal_size=1GB",
         "-c",
         "autovacuum=off",
         "-c",
@@ -98,7 +104,10 @@ function startTimescale() {
         "max_connections=300",
         "-c",
         "client_min_messages=warning",
+        "-c",
+        "timescaledb.max_background_workers=0",
       ])
+      .withTmpFs({ [TIMESCALE_DATA_DIR]: "rw,noexec,nosuid,size=3g" })
       .withBindMounts([{ source: TIMESCALE_SOCKET_VOLUME, target: TIMESCALE_SOCKET_DIR }])
       .withExposedPorts(TIMESCALE_CONTAINER_PORT)
       // The official entrypoint starts postgres twice (init, then for real): wait for the second "ready".
@@ -114,9 +123,8 @@ function startIntegresql() {
     .withEnvironment({
       INTEGRESQL_PORT: String(INTEGRESQL_CONTAINER_PORT),
       INTEGRESQL_TEST_INITIAL_POOL_SIZE: "16",
-      INTEGRESQL_TEST_MAX_POOL_SIZE: "128",
+      INTEGRESQL_TEST_MAX_POOL_SIZE: "96",
       PGHOST: TIMESCALE_SOCKET_DIR,
-      // socket file is named after the server's own port, not the mapped one
       PGPORT: String(TIMESCALE_CONTAINER_PORT),
       PGUSER: TIMESCALE_ENV.user,
       PGPASSWORD: TIMESCALE_ENV.password,
@@ -127,4 +135,32 @@ function startIntegresql() {
     .withWaitStrategy(Wait.forLogMessage(/http server started/))
     .withReuse()
     .start();
+}
+
+async function hasStaleTemplates({
+  host,
+  port,
+  currentHash,
+}: {
+  host: string;
+  port: number;
+  currentHash: string;
+}) {
+  const pg = new Client({
+    host,
+    port,
+    user: TIMESCALE_ENV.user,
+    password: TIMESCALE_ENV.password,
+    database: TIMESCALE_ENV.database,
+  });
+  await pg.connect();
+  try {
+    const { rows } = await pg.query<{ datname: string }>(
+      "SELECT datname FROM pg_database WHERE datname LIKE 'integresql_template_%' AND datname <> $1",
+      [`integresql_template_${currentHash}`],
+    );
+    return rows.length > 0;
+  } finally {
+    await pg.end();
+  }
 }

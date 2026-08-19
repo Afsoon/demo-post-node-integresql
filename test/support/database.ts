@@ -17,7 +17,9 @@ export async function createTestDatabase() {
     host: ctx.host,
     port: ctx.port,
   });
-  const { db, pool } = createDb(url);
+  // Every connection to a fresh clone is a cold backend (TimescaleDB catalog warm-up ≈ 15–60 ms):
+  // keep the pool small. Sequential specs use 1, fan-outs still get parallelism.
+  const { db, pool } = createDb(url, { max: Number(process.env.TEST_PG_POOL_MAX ?? 4) });
 
   return {
     db,
