@@ -118,7 +118,7 @@ Each shard boots its own TimescaleDB + integresql on its runner. `node_modules` 
 
 `ubuntu-latest` ships Docker, so testcontainers works unchanged; `TESTCONTAINERS_REUSE_ENABLE=false` is set in the job (`.env.test` never overrides existing variables) so every run gets fresh containers that the reaper removes. Container logs are dumped on failure. Replace `OWNER/REPO` in the badge above once the repo is on GitHub.
 
-`VITEST_MAX_WORKERS` (number or percentage) overrides the `50%` default; CI pins `50%`.
+`VITEST_MAX_WORKERS` (number or percentage) overrides the `50%` default; CI pins `75%` (3 of 4 vCPUs — measured ~8 s faster per shard than 50%).
 
 ## Migrations
 

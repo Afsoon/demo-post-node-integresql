@@ -55,8 +55,7 @@ jobs:
       # .env.test is loaded with process.loadEnvFile, which never overrides variables already set:
       # fresh containers per run here, the testcontainers reaper cleans them up.
       TESTCONTAINERS_REUSE_ENABLE: "false"
-      # half the runner's vCPUs for vitest, the other half for Postgres; "1" is the other sane value
-      VITEST_MAX_WORKERS: "50%"
+      VITEST_MAX_WORKERS: "75%"
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
