@@ -106,17 +106,19 @@ it("creates a customer", async () => {
 
 ## CI
 
-`.github/workflows/ci.yml` runs on pushes to `main` and on pull requests, as three parallel lanes:
+`.github/workflows/ci.yml` runs on pushes to `main` and on pull requests, as two parallel lanes with no serial hops:
 
 ```
 check   typecheck → drizzle drift check (no Docker)
-test    matrix shard 1..3 → containers → vitest run --shard=i/3 --reporter=blob → upload .vitest-reports/
-report  needs test (always) → download blobs → vitest run --merge-reports  (one summary, fails if any shard failed)
+test    matrix shard 1..3 → node_modules cache → image cache (docker load, pull+save on miss)
+        → containers → vitest run --shard=i/3 --reporter=blob --reporter=default → upload blob-i
 ```
 
-An `images` job runs first and warms one cached tarball of the two images (`actions/cache`, key = hash of `test/globalSetup.ts` where the tags live; pulls only on a miss); each shard then `docker load`s it (`actions/cache/restore`, `fail-on-cache-miss`) and boots its own TimescaleDB + integresql. Change the shard count in one place (`env.SHARDS` + the matrix). Local sharding is not used: on one machine it only doubles the setup for the same cores (measured slower). `ubuntu-latest` ships Docker, so testcontainers works unchanged; `TESTCONTAINERS_REUSE_ENABLE=false` is set in the job (`.env.test` never overrides existing variables) so every run gets fresh containers that the reaper removes. Container logs are dumped on failure. Replace `OWNER/REPO` in the badge above once the repo is on GitHub.
+Each shard boots its own TimescaleDB + integresql on its runner. `node_modules` is cached by lockfile hash (install skipped on a hit; the pnpm store cache is the fallback) and the two images as one tarball keyed by `test/globalSetup.ts`. There is no merge job: shards fail the workflow on their own; for a single merged summary run `gh run download <run-id> -p 'blob-*' -D .vitest-reports && pnpm vitest run --merge-reports`. Change the shard count in `env.SHARDS` + the matrix. Local sharding is not used: on one machine it only doubles the setup for the same cores (measured slower).
 
-`VITEST_MAX_WORKERS` overrides the `cpus/2` default for CI experiments.
+`ubuntu-latest` ships Docker, so testcontainers works unchanged; `TESTCONTAINERS_REUSE_ENABLE=false` is set in the job (`.env.test` never overrides existing variables) so every run gets fresh containers that the reaper removes. Container logs are dumped on failure. Replace `OWNER/REPO` in the badge above once the repo is on GitHub.
+
+`VITEST_MAX_WORKERS` (number or percentage) overrides the `50%` default; CI pins `50%`.
 
 ## Migrations
 

@@ -24,7 +24,14 @@ jobs:
         with:
           node-version-file: .node-version
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
+      - name: Restore node_modules
+        id: node-modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: node-modules-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc') }}
+      - if: steps.node-modules.outputs.cache-hit != 'true'
+        run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - name: Check migrations are in sync with the drizzle schema
         # `generate` only diffs the schema against the last snapshot (no DB). Anything it would
@@ -35,32 +42,8 @@ jobs:
             echo "::error::drizzle schema and migrations are out of sync:"; git status --porcelain drizzle; exit 1
           fi
 
-  images:
-    name: test images cache
-    # Warms the image cache once per push; the shards only `docker load` from it.
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - name: Restore or create the test images tarball
-        id: cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/test-images
-          # the image tags live in test/globalSetup.ts: bumping one invalidates the cache
-          key: test-images-${{ hashFiles('test/globalSetup.ts') }}
-      - name: Pull and save images
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: |
-          docker pull timescale/timescaledb:2.29.2-pg18 &
-          docker pull ghcr.io/allaboutapps/integresql:v1.1.0 &
-          wait
-          mkdir -p "$RUNNER_TEMP/test-images"
-          docker save -o "$RUNNER_TEMP/test-images/images.tar" timescale/timescaledb:2.29.2-pg18 ghcr.io/allaboutapps/integresql:v1.1.0
-
   test:
     name: tests (shard ${{ matrix.shard }}/3)
-    needs: images
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -72,6 +55,8 @@ jobs:
       # .env.test is loaded with process.loadEnvFile, which never overrides variables already set:
       # fresh containers per run here, the testcontainers reaper cleans them up.
       TESTCONTAINERS_REUSE_ENABLE: "false"
+      # half the runner's vCPUs for vitest, the other half for Postgres; "1" is the other sane value
+      VITEST_MAX_WORKERS: "50%"
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -79,24 +64,42 @@ jobs:
         with:
           node-version-file: .node-version
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
+      - name: Restore node_modules
+        id: node-modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: node-modules-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc') }}
+      - if: steps.node-modules.outputs.cache-hit != 'true'
+        run: pnpm install --frozen-lockfile
 
       - name: Restore test images
-        uses: actions/cache/restore@v4
+        # one tarball shared by every shard and push; the key follows the image tags pinned in
+        # test/globalSetup.ts, so bumping a tag invalidates it
+        uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/test-images
           key: test-images-${{ hashFiles('test/globalSetup.ts') }}
-          fail-on-cache-miss: true
 
-      - name: Load test images
-        # keeps image pulls out of vitest's globalSetup hookTimeout
+      - name: Load or pull test images
+        # keeps image pulls out of vitest's globalSetup hookTimeout; on a miss the pulled images are
+        # saved so later runs (and the sibling shards' next run) can `docker load` them
+        env:
+          TARBALL: ${{ runner.temp }}/test-images/images.tar
         run: |
-          docker load -i "$RUNNER_TEMP/test-images/images.tar"
-          docker image ls --format '{{.Repository}}:{{.Tag}} {{.Size}}' | grep -E 'timescaledb|integresql'
+          if [ -f "$TARBALL" ]; then
+            docker load -i "$TARBALL"
+          else
+            docker pull timescale/timescaledb:2.29.2-pg18 &
+            docker pull ghcr.io/allaboutapps/integresql:v1.1.0 &
+            wait
+            mkdir -p "$(dirname "$TARBALL")"
+            docker save -o "$TARBALL" timescale/timescaledb:2.29.2-pg18 ghcr.io/allaboutapps/integresql:v1.1.0
+          fi
 
       - name: Run shard
-        # blob reporter → .vitest-reports/blob-<i>-<n>.json, merged by the `report` job;
-        # the default reporter keeps live output in this job's log.
+        # blob reporter → .vitest-reports/blob-<i>-<n>.json (uploaded below, mergeable on demand);
+        # the default reporter keeps live output in this job's log
         run: pnpm vitest run --shard=${{ matrix.shard }}/${{ env.SHARDS }} --reporter=blob --reporter=default
 
       - uses: actions/upload-artifact@v4
@@ -116,28 +119,3 @@ jobs:
           for c in $(docker ps -aq --filter label=demo.blog.service=metered); do
             echo "===== $c"; docker logs "$c" 2>&1 | tail -200
           done
-
-  report:
-    name: merged test report
-    needs: test
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .node-version
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: blob-*
-          path: .vitest-reports
-          merge-multiple: true
-      - name: Merge shard reports
-        # prints one summary for the whole suite and exits non-zero if any shard had failures
-        run: |
-          ls -la .vitest-reports
-          pnpm vitest run --merge-reports
