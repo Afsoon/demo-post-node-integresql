@@ -1,4 +1,6 @@
 allowBuilds:
+  cpu-features: true
   esbuild: true
-minimumReleaseAgeExclude:
-  - hono@4.13.3
+  msw: true
+  protobufjs: true
+  ssh2: true

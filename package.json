@@ -10,7 +10,9 @@
     "db:generate": "drizzle-kit generate",
     "db:generate:custom": "drizzle-kit generate --custom",
     "db:migrate": "nub --env-file-if-exists=.env.development --env-file-if-exists=.env.local src/infra/db/migrate.ts",
-    "db:studio": "drizzle-kit studio"
+    "db:studio": "drizzle-kit studio",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.1",
@@ -25,18 +27,14 @@
     "valibot": "^1.4.2"
   },
   "devDependencies": {
+    "@devoxa/integresql-client": "^2.1.2",
     "@nubjs/types": "^0.7.5",
     "@types/node": "^26.1.1",
     "@types/pg": "^8.23.1",
     "drizzle-kit": "1.0.0-rc.4",
-    "typescript": "^7.0.2"
-  },
-  "devEngines": {
-    "packageManager": {
-      "name": "nub",
-      "version": "^0.5.0",
-      "onFail": "ignore"
-    }
-  },
-  "packageManager": "nub@0.7.5"
+    "msw": "^2.15.0",
+    "testcontainers": "^12.1.0",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  }
 }

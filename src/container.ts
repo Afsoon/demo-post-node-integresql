@@ -43,22 +43,30 @@ export function createContainer({ db, billingProvider }: ContainerDeps) {
 
 export type Container = ReturnType<typeof createContainer>
 
+/**
+ * Billing provider from environment: real Polar SDK adapters when a token is configured,
+ * no-op adapters otherwise. Tests use the same path (MSW intercepts the SDK's HTTP calls).
+ */
+export function createBillingProviderFromEnv(env: Env) {
+  if (!env.POLAR_ACCESS_TOKEN || !env.POLAR_PRODUCT_ID) {
+    console.warn('POLAR_ACCESS_TOKEN not set: billing provider (customers + usage) is a no-op')
+    const provider: ContainerDeps['billingProvider'] = {
+      customers: createNoopBillingProviderCustomers(),
+      usage: createNoopBillingProviderUsage(),
+    }
+    return provider
+  }
+  const polar = createPolarClient({ accessToken: env.POLAR_ACCESS_TOKEN, environment: env.POLAR_ENVIRONMENT })
+  const provider: ContainerDeps['billingProvider'] = {
+    customers: createPolarCustomersClient(polar),
+    usage: createPolarUsageClient(polar, { productId: env.POLAR_PRODUCT_ID }),
+  }
+  return provider
+}
+
 /** Production wiring from environment variables. */
 export function createContainerFromEnv(env: Env) {
   const { db, pool } = createDb(env.DATABASE_URL)
-
-  const billingProvider = (() => {
-    if (!env.POLAR_ACCESS_TOKEN || !env.POLAR_PRODUCT_ID) {
-      console.warn('POLAR_ACCESS_TOKEN not set: billing provider (customers + usage) is a no-op')
-      return { customers: createNoopBillingProviderCustomers(), usage: createNoopBillingProviderUsage() }
-    }
-    const polar = createPolarClient({ accessToken: env.POLAR_ACCESS_TOKEN, environment: env.POLAR_ENVIRONMENT })
-    return {
-      customers: createPolarCustomersClient(polar),
-      usage: createPolarUsageClient(polar, { productId: env.POLAR_PRODUCT_ID }),
-    }
-  })()
-
-  const container = createContainer({ db, billingProvider })
+  const container = createContainer({ db, billingProvider: createBillingProviderFromEnv(env) })
   return { container, pool }
 }

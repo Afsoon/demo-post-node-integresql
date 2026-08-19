@@ -8,9 +8,17 @@
     "allowImportingTsExtensions": true,
     "erasableSyntaxOnly": true,
     "skipLibCheck": true,
-    "types": ["node"],
-    "rootDir": "./src",
+    "types": [
+      "node"
+    ],
     "noEmit": true
   },
-  "include": ["src"]
+  "exclude": [
+    "node_modules"
+  ],
+  "include": [
+    "src",
+    "test",
+    "vitest.config.ts"
+  ]
 }
