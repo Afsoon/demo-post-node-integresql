@@ -1,0 +1,36 @@
+{
+  "name": "demo-post-node-integresql",
+  "type": "module",
+  "scripts": {
+    "dev": "nub --watch --env-file-if-exists=.env.local src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.1",
+    "@hono/standard-validator": "^0.4.0",
+    "@polar-sh/sdk": "1.0.0-alpha.16",
+    "@scalar/hono-api-reference": "^0.11.14",
+    "@valibot/to-json-schema": "^1.7.1",
+    "drizzle-orm": "1.0.0-rc.4",
+    "hono": "^4.13.3",
+    "hono-openapi": "^1.3.1",
+    "pg": "^8.23.0",
+    "valibot": "^1.4.2"
+  },
+  "devDependencies": {
+    "@nubjs/types": "^0.7.5",
+    "@types/node": "^26.1.1",
+    "@types/pg": "^8.23.1",
+    "drizzle-kit": "1.0.0-rc.4",
+    "typescript": "^7.0.2"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "nub",
+      "version": "^0.5.0",
+      "onFail": "ignore"
+    }
+  },
+  "packageManager": "nub@0.7.5"
+}
