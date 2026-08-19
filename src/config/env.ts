@@ -3,7 +3,8 @@ import * as v from 'valibot'
 const EnvSchema = v.pipe(
   v.object({
     PORT: v.optional(v.pipe(v.string(), v.transform(Number), v.integer(), v.minValue(1)), '3000'),
-    DATABASE_URL: v.pipe(v.string(), v.url()),
+    /** Any libpq-style connection string; socket form (`postgresql://u:p@/db?host=/dir`) is not a WHATWG URL, so no v.url() */
+    DATABASE_URL: v.pipe(v.string(), v.regex(/^postgres(ql)?:\/\//, 'must be a postgres:// connection string')),
     /** Shared secret for the Bearer auth middleware protecting every API route. */
     API_TOKEN: v.pipe(v.string(), v.minLength(16)),
     POLAR_ACCESS_TOKEN: v.optional(v.pipe(v.string(), v.trim())),

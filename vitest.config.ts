@@ -26,6 +26,6 @@ export default defineConfig({
     isolate: false,
     // Postgres (Docker VM) and the workers share the same cores: more workers than half the CPUs
     // only adds contention (measured: 10 workers ≈ 8.5–10 s, 4–5 workers ≈ 7.5 s on a 10-core box).
-    maxWorkers: Math.max(2, Math.floor(availableParallelism() / 2)),
+    maxWorkers: Number(process.env.VITEST_MAX_WORKERS) || Math.max(2, Math.floor(availableParallelism() / 2)),
   },
 });

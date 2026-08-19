@@ -38,6 +38,13 @@ jobs:
             echo "::error::drizzle schema and migrations are out of sync:"; git status --porcelain drizzle; exit 1
           fi
 
+      - name: Postgres unix socket dir for the test workers (Linux only)
+        # The alpine Postgres in the container runs as uid 70 and must create the socket here;
+        # the named volume used locally is replaced by this bind mount (see test/globalSetup.ts).
+        run: |
+          mkdir -p "$RUNNER_TEMP/pgsock" && chmod 1777 "$RUNNER_TEMP/pgsock"
+          echo "TEST_PG_SOCKET_DIR=$RUNNER_TEMP/pgsock" >> "$GITHUB_ENV"
+
       - name: Pre-pull test images
         run: |
           docker pull timescale/timescaledb:2.29.2-pg18 &

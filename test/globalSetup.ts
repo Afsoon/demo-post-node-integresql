@@ -5,6 +5,7 @@ import type { TestProject } from "vitest/node";
 import { createDb } from "../src/infra/db/client.ts";
 import { runMigrations } from "../src/infra/db/migrate.ts";
 import type { IntegreSqlContext } from "./support/integresql.d.ts";
+import { type PgTarget, pgConnectionUrl } from "./support/pg-url.ts";
 
 const TIMESCALE_IMAGE = "timescale/timescaledb:2.29.2-pg18";
 const INTEGRESQL_IMAGE = "ghcr.io/allaboutapps/integresql:v1.1.0";
@@ -16,6 +17,13 @@ const TIMESCALE_ENV = { user: "metered", password: "metered", database: "metered
 
 const TIMESCALE_SOCKET_VOLUME = "metered-test-pgsock";
 const TIMESCALE_SOCKET_DIR = "/var/run/postgresql";
+/**
+ * Linux only (CI): a host directory bind-mounted as the socket dir, so workers connect to Postgres
+ * over the unix socket instead of the published TCP port. Unset locally on macOS: Docker Desktop's
+ * VM boundary does not carry unix sockets, there the named volume + TCP path is used.
+ */
+const HOST_SOCKET_DIR = process.env.TEST_PG_SOCKET_DIR || undefined;
+const socketMount = { source: HOST_SOCKET_DIR ?? TIMESCALE_SOCKET_VOLUME, target: TIMESCALE_SOCKET_DIR };
 const TIMESCALE_DATA_DIR = "/var/lib/postgresql";
 
 const SCHEMA_FILES = ["drizzle/**/*.sql", "drizzle/**/*.json"];
@@ -32,18 +40,23 @@ export default async function setup(project: TestProject) {
   const integresql = await startIntegresql();
   started = [integresql, timescale];
 
+  const pgTarget: PgTarget = HOST_SOCKET_DIR ? { socketDir: HOST_SOCKET_DIR } : { host, port };
+  console.log(
+    HOST_SOCKET_DIR
+      ? `[globalSetup] postgres via unix socket ${HOST_SOCKET_DIR}`
+      : `[globalSetup] postgres via tcp ${host}:${port}`,
+  );
+
   const url = `http://${integresql.getHost()}:${integresql.getMappedPort(INTEGRESQL_CONTAINER_PORT)}`;
   const client = new IntegreSQLClient({ url });
   const templateHash = await client.hashFiles(SCHEMA_FILES);
 
-  if (await hasStaleTemplates({ host, port, currentHash: templateHash })) {
+  if (await hasStaleTemplates(pgTarget, templateHash)) {
     await client.api.discardAllTemplates();
   }
 
   await client.initializeTemplate(templateHash, async (templateConfig) => {
-    const { db, pool } = createDb(
-      client.databaseConfigToConnectionUrl({ ...templateConfig, host, port }),
-    );
+    const { db, pool } = createDb(pgConnectionUrl(templateConfig, pgTarget));
     try {
       await runMigrations(db);
     } finally {
@@ -51,7 +64,7 @@ export default async function setup(project: TestProject) {
     }
   });
 
-  const context: IntegreSqlContext = { url, templateHash, host, port };
+  const context: IntegreSqlContext = { url, templateHash, host, port, socketDir: HOST_SOCKET_DIR };
   project.provide("integresql", context);
 }
 
@@ -108,7 +121,7 @@ function startTimescale() {
         "timescaledb.max_background_workers=0",
       ])
       .withTmpFs({ [TIMESCALE_DATA_DIR]: "rw,noexec,nosuid,size=3g" })
-      .withBindMounts([{ source: TIMESCALE_SOCKET_VOLUME, target: TIMESCALE_SOCKET_DIR }])
+      .withBindMounts([socketMount])
       .withExposedPorts(TIMESCALE_CONTAINER_PORT)
       // The official entrypoint starts postgres twice (init, then for real): wait for the second "ready".
       .withWaitStrategy(Wait.forLogMessage(/database system is ready to accept connections/, 2))
@@ -130,28 +143,19 @@ function startIntegresql() {
       PGPASSWORD: TIMESCALE_ENV.password,
       PGDATABASE: TIMESCALE_ENV.database,
     })
-    .withBindMounts([{ source: TIMESCALE_SOCKET_VOLUME, target: TIMESCALE_SOCKET_DIR }])
+    .withBindMounts([socketMount])
     .withExposedPorts(INTEGRESQL_CONTAINER_PORT)
     .withWaitStrategy(Wait.forLogMessage(/http server started/))
     .withReuse()
     .start();
 }
 
-async function hasStaleTemplates({
-  host,
-  port,
-  currentHash,
-}: {
-  host: string;
-  port: number;
-  currentHash: string;
-}) {
+async function hasStaleTemplates(target: PgTarget, currentHash: string) {
   const pg = new Client({
-    host,
-    port,
-    user: TIMESCALE_ENV.user,
-    password: TIMESCALE_ENV.password,
-    database: TIMESCALE_ENV.database,
+    connectionString: pgConnectionUrl(
+      { username: TIMESCALE_ENV.user, password: TIMESCALE_ENV.password, database: TIMESCALE_ENV.database, host: "", port: 0 },
+      target,
+    ),
   });
   await pg.connect();
   try {
