@@ -2,9 +2,15 @@
   "name": "demo-post-node-integresql",
   "type": "module",
   "scripts": {
-    "dev": "nub --watch --env-file-if-exists=.env.local src/index.ts",
-    "build": "tsc",
-    "start": "node dist/index.js"
+    "dev": "nub --watch --env-file-if-exists=.env.development --env-file-if-exists=.env.local src/index.ts",
+    "start": "nub --env-file-if-exists=.env.development --env-file-if-exists=.env.local src/index.ts",
+    "typecheck": "tsc",
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down",
+    "db:generate": "drizzle-kit generate",
+    "db:generate:custom": "drizzle-kit generate --custom",
+    "db:migrate": "nub --env-file-if-exists=.env.development --env-file-if-exists=.env.local src/infra/db/migrate.ts",
+    "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.1",

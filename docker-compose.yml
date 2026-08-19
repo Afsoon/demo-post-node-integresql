@@ -1,0 +1,20 @@
+services:
+  timescaledb:
+    image: timescale/timescaledb:2.29.2-pg18
+    container_name: metered-timescaledb
+    environment:
+      POSTGRES_USER: metered
+      POSTGRES_PASSWORD: metered
+      POSTGRES_DB: metered
+    ports:
+      - "5432:5432"
+    volumes:
+      - timescaledb-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U metered -d metered"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  timescaledb-data:

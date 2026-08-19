@@ -1,0 +1,530 @@
+{
+  "id": "7d4adedb-1aaf-40be-b025-0c1a61562b5a",
+  "prevIds": [
+    "0781b395-7b80-4581-b91b-77f133614e78"
+  ],
+  "version": "8",
+  "dialect": "postgres",
+  "ddl": [
+    {
+      "values": [
+        "active",
+        "suspended"
+      ],
+      "name": "customer_status",
+      "entityType": "enums",
+      "schema": "public"
+    },
+    {
+      "values": [
+        "individual",
+        "team"
+      ],
+      "name": "customer_type",
+      "entityType": "enums",
+      "schema": "public"
+    },
+    {
+      "values": [
+        "free",
+        "pro",
+        "enterprise"
+      ],
+      "name": "billing_plan",
+      "entityType": "enums",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "customers",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "billing_profiles",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "usage_events",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "uuidv7()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "customers"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "email",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "customers"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "name",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "customers"
+    },
+    {
+      "type": "customer_type",
+      "typeSchema": "public",
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "type",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "customers"
+    },
+    {
+      "type": "customer_status",
+      "typeSchema": "public",
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'active'",
+      "generated": null,
+      "identity": null,
+      "name": "status",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "customers"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "polar_customer_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "customers"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'{}'",
+      "generated": null,
+      "identity": null,
+      "name": "metadata",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "customers"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "customers"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "customers"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "customer_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "billing_profiles"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "legal_name",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "billing_profiles"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "tax_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "billing_profiles"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "billing_email",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "billing_profiles"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "address",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "billing_profiles"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "monthly_event_limit",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "billing_profiles"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "rate_limit_per_minute",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "billing_profiles"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "true",
+      "generated": null,
+      "identity": null,
+      "name": "hard_limit",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "billing_profiles"
+    },
+    {
+      "type": "billing_plan",
+      "typeSchema": "public",
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "plan",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "billing_profiles"
+    },
+    {
+      "type": "char(3)",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "currency",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "billing_profiles"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "price_per_unit_cents",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "billing_profiles"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "included_units",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "billing_profiles"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "billing_profiles"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "billing_profiles"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "uuidv7()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "usage_events"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "occurred_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "usage_events"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "customer_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "usage_events"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "event_name",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "usage_events"
+    },
+    {
+      "type": "numeric(18,6)",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'1'",
+      "generated": null,
+      "identity": null,
+      "name": "quantity",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "usage_events"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "external_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "usage_events"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'{}'",
+      "generated": null,
+      "identity": null,
+      "name": "metadata",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "usage_events"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "received_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "usage_events"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "customer_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "customers",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "billing_profiles_customer_id_customers_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "billing_profiles"
+    },
+    {
+      "columns": [
+        "occurred_at",
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "usage_events_pkey",
+      "entityType": "pks",
+      "schema": "public",
+      "table": "usage_events"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "customers_pkey",
+      "schema": "public",
+      "table": "customers",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "customer_id"
+      ],
+      "nameExplicit": false,
+      "name": "billing_profiles_pkey",
+      "schema": "public",
+      "table": "billing_profiles",
+      "entityType": "pks"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "email"
+      ],
+      "nullsNotDistinct": false,
+      "name": "customers_email_key",
+      "schema": "public",
+      "table": "customers",
+      "entityType": "uniques"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "polar_customer_id"
+      ],
+      "nullsNotDistinct": false,
+      "name": "customers_polar_customer_id_key",
+      "schema": "public",
+      "table": "customers",
+      "entityType": "uniques"
+    }
+  ],
+  "renames": []
+}

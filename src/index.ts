@@ -1,15 +1,22 @@
 import { serve } from '@hono/node-server'
-import { Hono } from 'hono'
+import { createApp } from './app.ts'
+import { loadEnv } from './config/env.ts'
+import { createContainerFromEnv } from './container.ts'
 
-const app = new Hono()
+const env = loadEnv()
+const { container, pool } = createContainerFromEnv(env)
+const app = createApp(container, { apiToken: env.API_TOKEN })
 
-app.get('/', (c) => {
-  return c.text('Hello Hono!')
+const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => {
+  console.log(`Server is running on http://localhost:${info.port} (docs: /docs)`)
 })
 
-serve({
-  fetch: app.fetch,
-  port: 3000
-}, (info) => {
-  console.log(`Server is running on http://localhost:${info.port}`)
-})
+async function shutdown(signal: string) {
+  console.log(`${signal} received, shutting down`)
+  server.close()
+  await pool.end()
+  process.exit(0)
+}
+
+process.on('SIGINT', () => void shutdown('SIGINT'))
+process.on('SIGTERM', () => void shutdown('SIGTERM'))
