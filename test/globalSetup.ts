@@ -5,7 +5,6 @@ import type { TestProject } from "vitest/node";
 import { createDb } from "../src/infra/db/client.ts";
 import { runMigrations } from "../src/infra/db/migrate.ts";
 import type { IntegreSqlContext } from "./support/integresql.d.ts";
-import { type PgTarget, pgConnectionUrl } from "./support/pg-url.ts";
 
 const TIMESCALE_IMAGE = "timescale/timescaledb:2.29.2-pg18";
 const INTEGRESQL_IMAGE = "ghcr.io/allaboutapps/integresql:v1.1.0";
@@ -17,13 +16,7 @@ const TIMESCALE_ENV = { user: "metered", password: "metered", database: "metered
 
 const TIMESCALE_SOCKET_VOLUME = "metered-test-pgsock";
 const TIMESCALE_SOCKET_DIR = "/var/run/postgresql";
-/**
- * Linux only (CI): a host directory bind-mounted as the socket dir, so workers connect to Postgres
- * over the unix socket instead of the published TCP port. Unset locally on macOS: Docker Desktop's
- * VM boundary does not carry unix sockets, there the named volume + TCP path is used.
- */
-const HOST_SOCKET_DIR = process.env.TEST_PG_SOCKET_DIR || undefined;
-const socketMount = { source: HOST_SOCKET_DIR ?? TIMESCALE_SOCKET_VOLUME, target: TIMESCALE_SOCKET_DIR };
+const socketMount = { source: TIMESCALE_SOCKET_VOLUME, target: TIMESCALE_SOCKET_DIR };
 const TIMESCALE_DATA_DIR = "/var/lib/postgresql";
 
 const SCHEMA_FILES = ["drizzle/**/*.sql", "drizzle/**/*.json"];
@@ -40,23 +33,19 @@ export default async function setup(project: TestProject) {
   const integresql = await startIntegresql();
   started = [integresql, timescale];
 
-  const pgTarget: PgTarget = HOST_SOCKET_DIR ? { socketDir: HOST_SOCKET_DIR } : { host, port };
-  console.log(
-    HOST_SOCKET_DIR
-      ? `[globalSetup] postgres via unix socket ${HOST_SOCKET_DIR}`
-      : `[globalSetup] postgres via tcp ${host}:${port}`,
-  );
 
   const url = `http://${integresql.getHost()}:${integresql.getMappedPort(INTEGRESQL_CONTAINER_PORT)}`;
   const client = new IntegreSQLClient({ url });
   const templateHash = await client.hashFiles(SCHEMA_FILES);
 
-  if (await hasStaleTemplates(pgTarget, templateHash)) {
+  if (await hasStaleTemplates({ host, port }, templateHash)) {
     await client.api.discardAllTemplates();
   }
 
   await client.initializeTemplate(templateHash, async (templateConfig) => {
-    const { db, pool } = createDb(pgConnectionUrl(templateConfig, pgTarget));
+    const { db, pool } = createDb(
+      client.databaseConfigToConnectionUrl({ ...templateConfig, host, port }),
+    );
     try {
       await runMigrations(db);
     } finally {
@@ -64,7 +53,7 @@ export default async function setup(project: TestProject) {
     }
   });
 
-  const context: IntegreSqlContext = { url, templateHash, host, port, socketDir: HOST_SOCKET_DIR };
+  const context: IntegreSqlContext = { url, templateHash, host, port };
   project.provide("integresql", context);
 }
 
@@ -150,12 +139,13 @@ function startIntegresql() {
     .start();
 }
 
-async function hasStaleTemplates(target: PgTarget, currentHash: string) {
+async function hasStaleTemplates({ host, port }: { host: string; port: number }, currentHash: string) {
   const pg = new Client({
-    connectionString: pgConnectionUrl(
-      { username: TIMESCALE_ENV.user, password: TIMESCALE_ENV.password, database: TIMESCALE_ENV.database, host: "", port: 0 },
-      target,
-    ),
+    host,
+    port,
+    user: TIMESCALE_ENV.user,
+    password: TIMESCALE_ENV.password,
+    database: TIMESCALE_ENV.database,
   });
   await pg.connect();
   try {

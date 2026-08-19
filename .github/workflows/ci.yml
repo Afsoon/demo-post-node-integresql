@@ -35,8 +35,32 @@ jobs:
             echo "::error::drizzle schema and migrations are out of sync:"; git status --porcelain drizzle; exit 1
           fi
 
+  images:
+    name: test images cache
+    # Warms the image cache once per push; the shards only `docker load` from it.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore or create the test images tarball
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/test-images
+          # the image tags live in test/globalSetup.ts: bumping one invalidates the cache
+          key: test-images-${{ hashFiles('test/globalSetup.ts') }}
+      - name: Pull and save images
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          docker pull timescale/timescaledb:2.29.2-pg18 &
+          docker pull ghcr.io/allaboutapps/integresql:v1.1.0 &
+          wait
+          mkdir -p "$RUNNER_TEMP/test-images"
+          docker save -o "$RUNNER_TEMP/test-images/images.tar" timescale/timescaledb:2.29.2-pg18 ghcr.io/allaboutapps/integresql:v1.1.0
+
   test:
     name: tests (shard ${{ matrix.shard }}/3)
+    needs: images
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -57,19 +81,18 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
-      - name: Postgres unix socket dir for the test workers (Linux only)
-        # The alpine Postgres in the container runs as uid 70 and must create the socket here;
-        # the named volume used locally is replaced by this bind mount (see test/globalSetup.ts).
-        run: |
-          mkdir -p "$RUNNER_TEMP/pgsock" && chmod 1777 "$RUNNER_TEMP/pgsock"
-          echo "TEST_PG_SOCKET_DIR=$RUNNER_TEMP/pgsock" >> "$GITHUB_ENV"
+      - name: Restore test images
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/test-images
+          key: test-images-${{ hashFiles('test/globalSetup.ts') }}
+          fail-on-cache-miss: true
 
-      - name: Pre-pull test images
+      - name: Load test images
         # keeps image pulls out of vitest's globalSetup hookTimeout
         run: |
-          docker pull timescale/timescaledb:2.29.2-pg18 &
-          docker pull ghcr.io/allaboutapps/integresql:v1.1.0 &
-          wait
+          docker load -i "$RUNNER_TEMP/test-images/images.tar"
+          docker image ls --format '{{.Repository}}:{{.Tag}} {{.Size}}' | grep -E 'timescaledb|integresql'
 
       - name: Run shard
         # blob reporter → .vitest-reports/blob-<i>-<n>.json, merged by the `report` job;
@@ -81,6 +104,9 @@ jobs:
         with:
           name: blob-${{ matrix.shard }}
           path: .vitest-reports/
+          # upload-artifact ignores dot-prefixed paths unless told otherwise
+          include-hidden-files: true
+          if-no-files-found: error
           retention-days: 3
 
       - name: Container logs (on failure)
@@ -112,4 +138,6 @@ jobs:
           merge-multiple: true
       - name: Merge shard reports
         # prints one summary for the whole suite and exits non-zero if any shard had failures
-        run: pnpm vitest run --merge-reports
+        run: |
+          ls -la .vitest-reports
+          pnpm vitest run --merge-reports
