@@ -27,7 +27,7 @@ export async function createTestDatabase() {
     url,
     async release() {
       await pool.end();
-      await client.api.recreateTestDatabase(ctx.templateHash, id);
+      //await client.api.recreateTestDatabase(ctx.templateHash, id);
     },
   };
 }

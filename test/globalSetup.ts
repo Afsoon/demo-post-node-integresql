@@ -33,7 +33,6 @@ export default async function setup(project: TestProject) {
   const integresql = await startIntegresql();
   started = [integresql, timescale];
 
-
   const url = `http://${integresql.getHost()}:${integresql.getMappedPort(INTEGRESQL_CONTAINER_PORT)}`;
   const client = new IntegreSQLClient({ url });
   const templateHash = await client.hashFiles(SCHEMA_FILES);
@@ -75,8 +74,6 @@ function startTimescale() {
       .withCommand([
         "postgres",
         "-c",
-        "shared_buffers=128MB",
-        "-c",
         "fsync=off",
         "-c",
         "synchronous_commit=off",
@@ -91,23 +88,11 @@ function startTimescale() {
         "-c",
         "summarize_wal=off",
         "-c",
-        "checkpoint_timeout=5min",
-        "-c",
-        "max_wal_size=1GB",
-        "-c",
         "autovacuum=off",
         "-c",
-        "jit=off",
-        "-c",
-        "track_io_timing=off",
+        "timescaledb.max_background_workers=0",
         "-c",
         "random_page_cost=1.1",
-        "-c",
-        "max_connections=300",
-        "-c",
-        "client_min_messages=warning",
-        "-c",
-        "timescaledb.max_background_workers=0",
       ])
       .withTmpFs({ [TIMESCALE_DATA_DIR]: "rw,noexec,nosuid,size=3g" })
       .withBindMounts([socketMount])
@@ -139,7 +124,10 @@ function startIntegresql() {
     .start();
 }
 
-async function hasStaleTemplates({ host, port }: { host: string; port: number }, currentHash: string) {
+async function hasStaleTemplates(
+  { host, port }: { host: string; port: number },
+  currentHash: string,
+) {
   const pg = new Client({
     host,
     port,
