@@ -64,9 +64,9 @@ export function createBillingProviderFromEnv(env: Env) {
   return provider
 }
 
-/** Production wiring from environment variables. */
+/** Runtime wiring from environment variables; DATABASE_URL supports Unix socket hosts. */
 export function createContainerFromEnv(env: Env) {
-  const { db, pool } = createDb(env.DATABASE_URL)
+  const { db, pool } = createDb({ connectionString: env.DATABASE_URL })
   const container = createContainer({ db, billingProvider: createBillingProviderFromEnv(env) })
   return { container, pool }
 }

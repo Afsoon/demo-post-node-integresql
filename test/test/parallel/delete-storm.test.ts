@@ -120,7 +120,7 @@ describe('delete storm', () => {
         api.polar.use(http.delete(`${api.polar.baseUrl}/v1/customers/${c.polarCustomerId}`, () => HttpResponse.json({}, { status: 500 })))
       }
       await Promise.all(customers.map((c) => deleteCustomer(api, c.id)))
-      api.polar.server.resetHandlers()
+      api.polar.resetHandlers()
 
       const responses = await Promise.all(customers.map((c) => deleteCustomer(api, c.id)))
 

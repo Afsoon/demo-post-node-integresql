@@ -107,7 +107,7 @@ describe('Polar failures', () => {
       await givenIngestedEvents(api, [usageEventBody(customer.id, { quantity: 3 })])
       polarDown(api, 'post', '/v1/events/ingest')
       await api.client.customers[':customerId'].usage.sync.$post({ param: { customerId: customer.id }, json: thisYear })
-      api.polar.server.resetHandlers()
+      api.polar.resetHandlers()
 
       const retry = await (
         await api.client.customers[':customerId'].usage.sync.$post({ param: { customerId: customer.id }, json: thisYear })

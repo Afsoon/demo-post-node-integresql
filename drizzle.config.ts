@@ -5,6 +5,6 @@ export default defineConfig({
   schema: './src/infra/db/schema/index.ts',
   out: './drizzle',
   dbCredentials: {
-    url: process.env.DATABASE_URL ?? 'postgres://metered:metered@localhost:5432/metered',
+    url: process.env.DATABASE_URL ?? 'postgres://metered:metered@%2Ftmp%2Fpgtest:6432/metered',
   },
 })

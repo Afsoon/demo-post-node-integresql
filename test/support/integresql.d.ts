@@ -1,12 +1,10 @@
-export type IntegreSqlContext = {
-  url: string;
-  templateHash: string;
+export type PgTestContext = {
   host: string;
   port: number;
 };
 
 declare module "vitest" {
   interface ProvidedContext {
-    integresql: IntegreSqlContext;
+    pgtest: PgTestContext;
   }
 }

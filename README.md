@@ -34,6 +34,8 @@ nub run dev            # http://localhost:3000/docs
 
 Env files are gitignored: `.env.development` holds the local defaults (copied from `.env.example`), `.env.local` overrides it — put your `POLAR_ACCESS_TOKEN` (and a real `API_TOKEN`) there.
 
+Development connects to database `metered` through the pgtest Unix socket at `/tmp/pgtest/.s.PGSQL.6432`. The default `DATABASE_URL` encodes the socket directory as `%2Ftmp%2Fpgtest`; the app, migrations, and Drizzle tooling use this connection. Start pgtest with `socket_dir="/tmp/pgtest"` and port `6432` before running migrations or the app; Docker Compose starts the backing TimescaleDB service only.
+
 ### Try it
 
 ```sh
@@ -83,10 +85,11 @@ pnpm test          # or pnpm test:watch
 ```
 
 - `vitest.config.ts` loads `.env.test` with Node's `process.loadEnvFile` (no dotenv) and forwards the keys to worker threads via `test.env`.
-- `test/globalSetup.ts` (runs once): starts TimescaleDB + [integresql](https://github.com/allaboutapps/integresql) with testcontainers (shared unix-socket volume, random host ports, `withReuse()` — set `TESTCONTAINERS_REUSE_ENABLE=true`, already in `.env.test`), hashes `drizzle/**` into a template hash and migrates the template database with `runMigrations` from `src/infra/db/migrate.ts`. Only serializable values are `provide`d to workers. The test database lives on **tmpfs** (RAM, never fills the Docker disk), runs with `timescaledb.max_background_workers=0` (no scheduler per cloned DB), integresql's pool is capped at 96 clones, and templates of older schema hashes are discarded automatically.
-- `test/support/database.ts` leases a clone of the template per test (`getTestDatabase`) and recreates it on release.
+- `test/globalSetup.ts` (runs once): starts TimescaleDB with testcontainers and applies pending migrations with `runMigrations` from `src/infra/db/migrate.ts`. `test/support/migration-hash.ts` computes SHA-256 over sorted relative paths and contents of `drizzle/**/*.sql` and `drizzle/**/*.json`, independent of checkout location, traversal order and timestamps. The ignored root `hash_migration.json` caches the hash and container ID; a missing/invalid cache, changed migrations or a fresh container triggers migration setup. The cache is read at runtime and replaced atomically only after migrations succeed. Only serializable values are `provide`d to workers.
+- `test/support/database.ts` creates isolated test connections at `/metered/<test-id>`. It also exports `getGlobalTestDatabase()`, which lazily shares a `{ db, pool, url }` client per worker connected to database `pgtest` through a Unix socket. Set `PGTEST_SOCKET_DIR` (default `/tmp/pgtest`) and `PGTEST_SOCKET_PORT` (default `6432`); the socket file `<directory>/.s.PGSQL.<port>` must be accessible to the Node test workers. Use `pool.query(...)` for raw PostgreSQL queries or `db` for Drizzle; `test/setup.ts` closes the shared pool after each test file.
 - `test/support/polar-mock.ts` — stateful in-memory double of the Polar endpoints we use (`/v1/customers/`, `/v1/events/ingest`, `/v1/orders/` + `/finalize`) served by an [MSW](https://mswjs.io) server. Local traffic (`http://127.0.0.1*`, `http://localhost*` → integresql API) passes through; any other URL throws (`onUnhandledRequest: 'error'`).
-- `test/support/api.ts` — `TestApi`: own DB clone + **own MSW server** + container wired exactly like dev (`createBillingProviderFromEnv` → real Polar SDK adapters with the fake credentials from `.env.test`) + in-process Hono app (`hono/testing` `testClient`, fully typed RPC, no listening port) + auth header. It implements `Symbol.asyncDispose` (closes MSW, releases the clone), so tests read:
+- `test/setup.ts` starts one MSW server per worker for each file and wraps each test with `server.boundary()` via `aroundEach`. Tests can run concurrently without sharing handler overrides.
+- `test/support/api.ts` — `TestApi`: own DB clone + **own MSW boundary and mock state** + container wired exactly like dev (`createBillingProviderFromEnv` → real Polar SDK adapters with the fake credentials from `.env.test`) + in-process Hono app (`hono/testing` `testClient`, fully typed RPC, no listening port) + auth header. App requests and mock overrides re-enter the instance's boundary, so multiple instances can coexist in one test. It implements `Symbol.asyncDispose` (releases the clone), so tests read:
 
 ```ts
 it("creates a customer", async () => {
@@ -97,12 +100,12 @@ it("creates a customer", async () => {
   expect(res.status).toBe(201);
   expect(api.polar.state.customers.size).toBe(1); // what Polar "received"
   expect(api.polar.requests[0]).toMatchObject({ method: "POST", url: "/v1/customers/" });
-}); // MSW closed + clone released here, no beforeEach/afterEach
+}); // Clone released here; MSW boundaries keep this instance's handlers isolated.
 ```
 
 - Spec style: `describe('<feature>') › describe('GIVEN <precondition>') › it('WHEN <action> THEN <outcome>')`; bodies are Arrange / Act / Assert blocks separated by blank lines (no comments). Preconditions are created **through the API** with the `given*` helpers in `test/support/fixtures.ts`; raw SQL (`sql*` helpers) only for states the API cannot produce (idempotency row in flight / expired). Request payloads come from `test/factories/` (`customerBody`, `billingProfileBody`, `usageEventBody`, `usageBatch`, `reportQuery`, …), typed from the RPC client so they follow the API contract.
-- Stress suite `test/test/parallel/` (8 files): 1000-event batches, 600+ event syncs, 100-way `Promise.all` fan-outs, idempotency/delete races, instance churn. One live `TestApi` per spec (MSW shares one interceptor per worker thread), parallelism comes from worker threads: `pnpm test` ≈ 13s vs `pnpm vitest run --maxWorkers=1` ≈ 29s on 10 cores. The suite found and fixed a dedup race (advisory lock per eventId in `insertMany`) and float drift in `syncedQuantity`.
-- Failure injection per instance: `api.polar.use(http.post(`${api.polar.baseUrl}/v1/customers/`, () => HttpResponse.json({}, { status: 500 })))` — overrides die with the instance (`test/test/polar-failures.test.ts`).
+- Stress suite `test/test/parallel/` (8 files): 1000-event batches, 600+ event syncs, 100-way `Promise.all` fan-outs, idempotency/delete races, instance churn. Test files run across worker threads, and `sequence.concurrent: true` enables concurrent tests within each worker. The suite found and fixed a dedup race (advisory lock per eventId in `insertMany`) and float drift in `syncedQuantity`.
+- Failure injection per instance: `api.polar.use(http.post(`${api.polar.baseUrl}/v1/customers/`, () => HttpResponse.json({}, { status: 500 })))` — overrides stay inside the instance's boundary. `api.polar.resetHandlers()` restores its default handlers without clearing its data or affecting other instances (`test/test/polar-failures.test.ts`).
 
 ## CI
 

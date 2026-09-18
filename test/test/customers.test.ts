@@ -181,11 +181,15 @@ describe('customers', () => {
     it('WHEN a customer is created in one THEN the other does not see it', async () => {
       await using api = await TestApi.start()
       await using other = await TestApi.start()
-      await givenCustomer(api)
+      const customer = await givenCustomer(api)
 
       const page = await (await other.client.customers.$get({ query: {} })).json()
 
       expect(page.items).toEqual([])
+      expect([...api.polar.state.customers.values()]).toEqual([
+        expect.objectContaining({ external_id: customer.id }),
+      ])
+      expect(other.polar.state.customers.size).toBe(0)
     })
   })
 

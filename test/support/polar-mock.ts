@@ -1,7 +1,14 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { HttpResponse, type HttpResponseResolver, http, passthrough } from 'msw'
 import { setupServer } from 'msw/node'
 
 export const POLAR_SANDBOX_URL = 'https://sandbox-api.polar.sh'
+
+// One interceptor per worker; test/setup.ts owns its lifetime.
+export const polarServer = setupServer(
+  http.all('http://127.0.0.1*', () => passthrough()),
+  http.all('http://localhost*', () => passthrough()),
+)
 
 export type PolarCustomer = {
   id: string
@@ -47,7 +54,7 @@ const validationError = (msg: string) =>
   HttpResponse.json({ detail: [{ loc: ['body'], msg, type: 'value_error' }] }, { status: 422 })
 
 /**
- * Stateful in-memory double of the Polar endpoints our adapters use, served by an MSW server
+ * Stateful in-memory double of the Polar endpoints our adapters use, with an MSW boundary
  * that is private to one TestApi. Everything local passes through (integresql API), everything
  * else not listed here throws (`onUnhandledRequest: 'error'`).
  */
@@ -85,10 +92,6 @@ export function createPolarMock({ baseUrl = POLAR_SANDBOX_URL } = {}) {
     }) satisfies HttpResponseResolver
 
   const handlers = [
-    // Never interfere with local traffic (integresql HTTP API, anything on loopback)
-    http.all('http://127.0.0.1*', () => passthrough()),
-    http.all('http://localhost*', () => passthrough()),
-
     http.post(
       `${baseUrl}/v1/customers/`,
       record(({ body }) => {
@@ -193,20 +196,22 @@ export function createPolarMock({ baseUrl = POLAR_SANDBOX_URL } = {}) {
     ),
   ]
 
-  const server = setupServer(...handlers)
+  // Capture this instance's boundary so requests and overrides re-enter the same scope,
+  // including when a test keeps multiple TestApi instances alive at once.
+  const run = polarServer.boundary(() => {
+    polarServer.use(...handlers)
+    return AsyncLocalStorage.snapshot()
+  })()
+  const initialHandlers = run(() => polarServer.listHandlers())
 
   return {
     baseUrl,
-    server,
     state,
     requests,
+    run,
     /** Per-instance overrides (e.g. force a 500); they vanish with the instance. */
-    use: (...overrides: Parameters<typeof server.use>) => server.use(...overrides),
-    // Anything not local and not a known Polar endpoint: MSW logs it and rejects the request
-    // (the SDK call throws, the API answers 500). A thrown callback would become a 500 *response*
-    // instead, which is why the built-in 'error' strategy is used.
-    listen: () => server.listen({ onUnhandledRequest: 'error' }),
-    close: () => server.close(),
+    use: (...overrides: Parameters<typeof polarServer.use>) => run(() => polarServer.use(...overrides)),
+    resetHandlers: () => run(() => polarServer.resetHandlers(...initialHandlers)),
   }
 }
 

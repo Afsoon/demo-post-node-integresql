@@ -42,7 +42,6 @@ export class TestApi implements AsyncDisposable {
 
   static async start() {
     const polar = createPolarMock();
-    polar.listen();
 
     let database: TestDatabase | undefined;
     try {
@@ -54,9 +53,10 @@ export class TestApi implements AsyncDisposable {
         billingProvider: createBillingProviderFromEnv(env),
       });
       const app = createApp(container, { apiToken: env.API_TOKEN, logger: false });
+      const fetch = app.fetch;
+      app.fetch = (...args) => polar.run(fetch, ...args);
       return new TestApi(database, polar, container, app, env.API_TOKEN);
     } catch (error) {
-      polar.close();
       await database?.release();
       throw error;
     }
@@ -71,10 +71,6 @@ export class TestApi implements AsyncDisposable {
   async [Symbol.asyncDispose]() {
     if (this.#released) return;
     this.#released = true;
-    try {
-      this.polar.close();
-    } finally {
-      await this.#database.release();
-    }
+    await this.#database.release();
   }
 }

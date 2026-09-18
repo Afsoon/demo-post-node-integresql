@@ -1,16 +1,16 @@
-import { IntegreSQLClient } from "@devoxa/integresql-client";
-import { Client } from "pg";
+import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { GenericContainer, type StartedTestContainer, Wait } from "testcontainers";
 import type { TestProject } from "vitest/node";
 import { createDb } from "../src/infra/db/client.ts";
 import { runMigrations } from "../src/infra/db/migrate.ts";
-import type { IntegreSqlContext } from "./support/integresql.d.ts";
+import fs from "node:fs/promises";
+import type { PgTestContext } from "./support/integresql.js";
+import { hashMigrationFiles } from "./support/migration-hash.ts";
 
 const TIMESCALE_IMAGE = "timescale/timescaledb:2.29.2-pg18";
-const INTEGRESQL_IMAGE = "ghcr.io/allaboutapps/integresql:v1.1.0";
 
 const TIMESCALE_CONTAINER_PORT = 5432;
-const INTEGRESQL_CONTAINER_PORT = 5000;
 
 const TIMESCALE_ENV = { user: "metered", password: "metered", database: "metered" };
 
@@ -19,7 +19,8 @@ const TIMESCALE_SOCKET_DIR = "/var/run/postgresql";
 const socketMount = { source: TIMESCALE_SOCKET_VOLUME, target: TIMESCALE_SOCKET_DIR };
 const TIMESCALE_DATA_DIR = "/var/lib/postgresql";
 
-const SCHEMA_FILES = ["drizzle/**/*.sql", "drizzle/**/*.json"];
+const MIGRATIONS_DIRECTORY = fileURLToPath(new URL("../drizzle/", import.meta.url));
+const HASH_FILE = new URL("../hash_migration.json", import.meta.url);
 
 const reuseEnabled = process.env.TESTCONTAINERS_REUSE_ENABLE === "true";
 
@@ -30,30 +31,46 @@ export default async function setup(project: TestProject) {
   const host = timescale.getHost();
   const port = timescale.getMappedPort(TIMESCALE_CONTAINER_PORT);
 
-  const integresql = await startIntegresql();
-  started = [integresql, timescale];
+  const templateHash = await hashMigrationFiles(MIGRATIONS_DIRECTORY);
+  const cached = await readMigrationCache();
+  const containerId = timescale.getId();
 
-  const url = `http://${integresql.getHost()}:${integresql.getMappedPort(INTEGRESQL_CONTAINER_PORT)}`;
-  const client = new IntegreSQLClient({ url });
-  const templateHash = await client.hashFiles(SCHEMA_FILES);
-
-  if (await hasStaleTemplates({ host, port }, templateHash)) {
-    await client.api.discardAllTemplates();
-  }
-
-  await client.initializeTemplate(templateHash, async (templateConfig) => {
-    const { db, pool } = createDb(
-      client.databaseConfigToConnectionUrl({ ...templateConfig, host, port }),
-    );
+  if (cached?.migration_hash !== templateHash || cached?.container_id !== containerId) {
+    const { db, pool } = createDb(`postgres://metered:metered@${host}:${port}/metered`);
     try {
       await runMigrations(db);
+      // Publish only completed migrations; readers see either the old cache or the complete new one.
+      const temporaryFile = new URL(`../hash_migration.${randomUUID()}.tmp`, import.meta.url);
+      try {
+        await fs.writeFile(
+          temporaryFile,
+          JSON.stringify({ migration_hash: templateHash, container_id: containerId }, null, 2) +
+            "\n",
+        );
+        await fs.rename(temporaryFile, HASH_FILE);
+      } finally {
+        await fs.rm(temporaryFile, { force: true });
+      }
     } finally {
       await pool.end();
     }
-  });
+  }
 
-  const context: IntegreSqlContext = { url, templateHash, host, port };
-  project.provide("integresql", context);
+  const pgtest: PgTestContext = { host, port };
+  project.provide("pgtest", pgtest);
+}
+
+async function readMigrationCache(): Promise<{
+  migration_hash?: string;
+  container_id?: string;
+} | null> {
+  try {
+    return JSON.parse(await fs.readFile(HASH_FILE, "utf8"));
+  } catch (error) {
+    if (error instanceof SyntaxError || (error as NodeJS.ErrnoException).code === "ENOENT")
+      return null;
+    throw error;
+  }
 }
 
 export async function teardown() {
@@ -69,10 +86,23 @@ function startTimescale() {
         POSTGRES_USER: TIMESCALE_ENV.user,
         POSTGRES_PASSWORD: TIMESCALE_ENV.password,
         POSTGRES_DB: TIMESCALE_ENV.database,
+        POSTGRES_HOST_AUTH_METHOD: "trust",
       })
       // Throughput over durability: this database is disposable.
       .withCommand([
         "postgres",
+        "-c",
+        "file_copy_method=clone",
+        "-c",
+        "log_connections=authentication,authorization,setup_durations",
+        "-c",
+        "log_destination=stderr",
+        "-c",
+        "logging_collector=off",
+        "-c",
+        "log_line_prefix=%m [%p] user=%u db=%d app=%a",
+        "-c",
+        "wal_skip_threshold=0",
         "-c",
         "fsync=off",
         "-c",
@@ -102,47 +132,4 @@ function startTimescale() {
       .withReuse()
       .start()
   );
-}
-
-function startIntegresql() {
-  return new GenericContainer(INTEGRESQL_IMAGE)
-    .withLabels({ "demo.blog.service": "metered", "demo.blog.role": "test-integresql" })
-    .withEnvironment({
-      INTEGRESQL_PORT: String(INTEGRESQL_CONTAINER_PORT),
-      INTEGRESQL_TEST_INITIAL_POOL_SIZE: "16",
-      INTEGRESQL_TEST_MAX_POOL_SIZE: "96",
-      PGHOST: TIMESCALE_SOCKET_DIR,
-      PGPORT: String(TIMESCALE_CONTAINER_PORT),
-      PGUSER: TIMESCALE_ENV.user,
-      PGPASSWORD: TIMESCALE_ENV.password,
-      PGDATABASE: TIMESCALE_ENV.database,
-    })
-    .withBindMounts([socketMount])
-    .withExposedPorts(INTEGRESQL_CONTAINER_PORT)
-    .withWaitStrategy(Wait.forLogMessage(/http server started/))
-    .withReuse()
-    .start();
-}
-
-async function hasStaleTemplates(
-  { host, port }: { host: string; port: number },
-  currentHash: string,
-) {
-  const pg = new Client({
-    host,
-    port,
-    user: TIMESCALE_ENV.user,
-    password: TIMESCALE_ENV.password,
-    database: TIMESCALE_ENV.database,
-  });
-  await pg.connect();
-  try {
-    const { rows } = await pg.query<{ datname: string }>(
-      "SELECT datname FROM pg_database WHERE datname LIKE 'integresql_template_%' AND datname <> $1",
-      [`integresql_template_${currentHash}`],
-    );
-    return rows.length > 0;
-  } finally {
-    await pg.end();
-  }
 }

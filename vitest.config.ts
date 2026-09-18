@@ -15,7 +15,16 @@ export default defineConfig({
   test: {
     include: ["test/test/**/*.test.ts"],
     globalSetup: ["test/globalSetup.ts"],
-    env: pick("API_TOKEN", "POLAR_ENVIRONMENT", "POLAR_ACCESS_TOKEN", "POLAR_PRODUCT_ID", "TEST_PG_POOL_MAX"),
+    setupFiles: ["test/setup.ts"],
+    env: pick(
+      "API_TOKEN",
+      "POLAR_ENVIRONMENT",
+      "POLAR_ACCESS_TOKEN",
+      "POLAR_PRODUCT_ID",
+      "TEST_PG_POOL_MAX",
+      "PGTEST_SOCKET_DIR",
+      "PGTEST_SOCKET_PORT",
+    ),
     fileParallelism: true,
     pool: "threads",
     // msw's cookie store probes `localStorage`; Node ≥ 25 warns about it being experimental
@@ -27,5 +36,8 @@ export default defineConfig({
     // only adds contention (measured: 10 workers ≈ 8.5–10 s, 4–5 workers ≈ 7.5 s on a 10-core box).
     // Override with VITEST_MAX_WORKERS (a number or a percentage, e.g. "1" / "50%").
     maxWorkers: process.env.VITEST_MAX_WORKERS || "50%",
+    sequence: {
+      concurrent: true,
+    },
   },
 });
