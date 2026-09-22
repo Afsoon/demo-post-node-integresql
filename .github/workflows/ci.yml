@@ -111,6 +111,11 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+      - name: Run all tests without sharding
+        # Run once across the matrix, after uploading the shard's blob report.
+        if: matrix.shard == 1
+        run: pnpm vitest run --reporter=default
+
       - name: Container logs (on failure)
         if: failure()
         run: |
