@@ -53,8 +53,10 @@ jobs:
     env:
       CI: "true"
       # .env.test is loaded with process.loadEnvFile, which never overrides variables already set:
-      # fresh containers per run here, the testcontainers reaper cleans them up.
+      # Fresh TimescaleDB per run; pgtest remains available for failure diagnostics.
       TESTCONTAINERS_REUSE_ENABLE: "false"
+      # Hosted runners need a published image; locally the alpha image can already exist.
+      PGTEST_IMAGE: ${{ vars.PGTEST_IMAGE || 'pgtest-tokio-size-validation:local' }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -77,7 +79,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/test-images
-          key: test-images-${{ hashFiles('test/globalSetup.ts') }}
+          key: test-images-${{ env.PGTEST_IMAGE }}-${{ hashFiles('test/globalSetup.ts') }}
 
       - name: Load or pull test images
         # keeps image pulls out of vitest's globalSetup hookTimeout; on a miss the pulled images are
@@ -88,11 +90,10 @@ jobs:
           if [ -f "$TARBALL" ]; then
             docker load -i "$TARBALL"
           else
-            docker pull timescale/timescaledb:2.29.2-pg18 &
-            docker pull ghcr.io/allaboutapps/integresql:v1.1.0 &
-            wait
+            docker pull timescale/timescaledb:2.29.2-pg18
+            docker image inspect "$PGTEST_IMAGE" >/dev/null 2>&1 || docker pull "$PGTEST_IMAGE"
             mkdir -p "$(dirname "$TARBALL")"
-            docker save -o "$TARBALL" timescale/timescaledb:2.29.2-pg18 ghcr.io/allaboutapps/integresql:v1.1.0
+            docker save -o "$TARBALL" timescale/timescaledb:2.29.2-pg18 "$PGTEST_IMAGE"
           fi
 
       - name: Run shard

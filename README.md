@@ -34,7 +34,14 @@ nub run dev            # http://localhost:3000/docs
 
 Env files are gitignored: `.env.development` holds the local defaults (copied from `.env.example`), `.env.local` overrides it — put your `POLAR_ACCESS_TOKEN` (and a real `API_TOKEN`) there.
 
-Development connects to database `metered` through the pgtest Unix socket at `/tmp/pgtest/.s.PGSQL.6432`. The default `DATABASE_URL` encodes the socket directory as `%2Ftmp%2Fpgtest`; the app, migrations, and Drizzle tooling use this connection. Start pgtest with `socket_dir="/tmp/pgtest"` and port `6432` before running migrations or the app; Docker Compose starts the backing TimescaleDB service only.
+The app (development and production), migrations, and Drizzle tooling accept TCP or Unix sockets through `DATABASE_URL`. Tests select their pgtest endpoint with `PGTEST_DATABASE_URL`; both the shared control client and isolated clients use that transport.
+
+| Setting | TCP example | Unix socket example |
+| --- | --- | --- |
+| `DATABASE_URL` | `postgres://metered:metered@localhost:5432/metered` | `postgres://metered:metered@%2Ftmp%2Fpgtest:6432/metered` |
+| `PGTEST_DATABASE_URL` | `postgres://metered:metered@localhost:6432/metered` | `postgres://metered:metered@%2Ftmp%2Fpgtest:6432/metered` |
+
+The socket URL encodes the directory as `%2Ftmp%2Fpgtest`, connecting through `/tmp/pgtest/.s.PGSQL.6432`. Development defaults to this socket; start pgtest with `socket_dir="/tmp/pgtest"` and port `6432` before running migrations or the app. Docker Compose starts the backing TimescaleDB service only. Set `DATABASE_URL` to the TCP example to connect directly to that service. Production can supply its own host, credentials, and connection options in the URL.
 
 ### Try it
 
@@ -78,15 +85,26 @@ src/
 drizzle/                   migrations (generated + custom SQL)
 ```
 
-## Tests (vitest + integresql)
+## Tests (Vitest + pgtest)
 
 ```sh
 pnpm test          # or pnpm test:watch
 ```
 
+Unless `PGTEST_DATABASE_URL` selects an external server, the local `pgtest-tokio-size-validation:local` image must be available to Docker. Set `PGTEST_IMAGE` to use another image with the same listener configuration. Locally, `TESTCONTAINERS_REUSE_ENABLE=true` keeps TimescaleDB and its socket volume running between test runs. The managed containers communicate as follows:
+
+```text
+Vitest clients ── TCP (mapped port) ──> pgtest ── Unix socket ──> TimescaleDB
+                                          /var/run/postgresql/.s.PGSQL.5432
+```
+
+The pgtest TCP listener uses `PGTEST_LISTEN_ADDR=0.0.0.0` and `PGTEST_LISTEN_PORT=6432`. Its upstream connection uses `PGTEST_PG_HOST=/var/run/postgresql` and `PGTEST_PG_PORT=5432`. `PGTEST_UNIX_SOCKET_PORT` belongs to pgtest's optional frontend Unix listener and is not used in this setup.
+
+pgtest is stopped with SIGINT and retained for inspection after each run, including readiness failures. Automatic cleanup and removal are disabled; the suite does not save performance reports or log files. Its container ID is printed during startup; inspect its output with `docker logs <container-id>`. Ctrl-C/SIGTERM waits for managed containers to stop before the runner exits. Set `TESTCONTAINERS_REUSE_ENABLE=false` to remove TimescaleDB after the run; CI uses this setting. The socket volume remains referenced by retained pgtest containers until you remove them.
+
 - `vitest.config.ts` loads `.env.test` with Node's `process.loadEnvFile` (no dotenv) and forwards the keys to worker threads via `test.env`.
-- `test/globalSetup.ts` (runs once): starts TimescaleDB with testcontainers and applies pending migrations with `runMigrations` from `src/infra/db/migrate.ts`. `test/support/migration-hash.ts` computes SHA-256 over sorted relative paths and contents of `drizzle/**/*.sql` and `drizzle/**/*.json`, independent of checkout location, traversal order and timestamps. The ignored root `hash_migration.json` caches the hash and container ID; a missing/invalid cache, changed migrations or a fresh container triggers migration setup. The cache is read at runtime and replaced atomically only after migrations succeed. Only serializable values are `provide`d to workers.
-- `test/support/database.ts` creates isolated test connections at `/metered/<test-id>`. It also exports `getGlobalTestDatabase()`, which lazily shares a `{ db, pool, url }` client per worker connected to database `pgtest` through a Unix socket. Set `PGTEST_SOCKET_DIR` (default `/tmp/pgtest`) and `PGTEST_SOCKET_PORT` (default `6432`); the socket file `<directory>/.s.PGSQL.<port>` must be accessible to the Node test workers. Use `pool.query(...)` for raw PostgreSQL queries or `db` for Drizzle; `test/setup.ts` closes the shared pool after each test file.
+- `test/globalSetup.ts` starts or reuses TimescaleDB, applies migrations to `metered`, then starts a fresh pgtest using the shared PostgreSQL socket. The migration hash is part of TimescaleDB's reuse identity, so changing migration files selects a fresh container and socket volume. Earlier reusable containers remain available until explicitly removed. It provides pgtest's mapped TCP host and port to workers. No migration cache file is needed.
+- `test/support/database.ts` defaults to the managed pgtest TCP endpoint, connecting isolated clients to `metered/<test-id>` and the shared `getGlobalTestDatabase()` client to `pgtest`. Setting `PGTEST_DATABASE_URL` uses an external TCP or Unix socket endpoint and skips the pgtest container entirely. TimescaleDB setup and migrations still run; the external pgtest server is not stopped and its logs are not managed by this suite. The legacy `PGTEST_SOCKET_DIR` and `PGTEST_SOCKET_PORT` settings also remain supported. The shared client exposes `{ db, pool, url }`: use `pool.query(...)` for raw PostgreSQL queries or `db` for Drizzle. `test/setup.ts` closes the shared pool after each test file.
 - `test/support/polar-mock.ts` — stateful in-memory double of the Polar endpoints we use (`/v1/customers/`, `/v1/events/ingest`, `/v1/orders/` + `/finalize`) served by an [MSW](https://mswjs.io) server. Local traffic (`http://127.0.0.1*`, `http://localhost*` → integresql API) passes through; any other URL throws (`onUnhandledRequest: 'error'`).
 - `test/setup.ts` starts one MSW server per worker for each file and wraps each test with `server.boundary()` via `aroundEach`. Tests can run concurrently without sharing handler overrides.
 - `test/support/api.ts` — `TestApi`: own DB clone + **own MSW boundary and mock state** + container wired exactly like dev (`createBillingProviderFromEnv` → real Polar SDK adapters with the fake credentials from `.env.test`) + in-process Hono app (`hono/testing` `testClient`, fully typed RPC, no listening port) + auth header. App requests and mock overrides re-enter the instance's boundary, so multiple instances can coexist in one test. It implements `Symbol.asyncDispose` (releases the clone), so tests read:
@@ -117,9 +135,9 @@ test    matrix shard 1..3 → node_modules cache → image cache (docker load, p
         → containers → vitest run --shard=i/3 --reporter=blob --reporter=default → upload blob-i
 ```
 
-Each shard boots its own TimescaleDB + integresql on its runner. `node_modules` is cached by lockfile hash (install skipped on a hit; the pnpm store cache is the fallback) and the two images as one tarball keyed by `test/globalSetup.ts`. There is no merge job: shards fail the workflow on their own; for a single merged summary run `gh run download <run-id> -p 'blob-*' -D .vitest-reports && pnpm vitest run --merge-reports`. Change the shard count in `env.SHARDS` + the matrix. Local sharding is not used: on one machine it only doubles the setup for the same cores (measured slower).
+Each shard boots its own TimescaleDB + pgtest on its runner. `node_modules` is cached by lockfile hash (install skipped on a hit; the pnpm store cache is the fallback) and the two images as one tarball keyed by `PGTEST_IMAGE` and `test/globalSetup.ts`. There is no merge job: shards fail the workflow on their own; for a single merged summary run `gh run download <run-id> -p 'blob-*' -D .vitest-reports && pnpm vitest run --merge-reports`. Change the shard count in `env.SHARDS` + the matrix. Local sharding is not used: on one machine it only doubles the setup for the same cores (measured slower).
 
-`ubuntu-latest` ships Docker, so testcontainers works unchanged; `TESTCONTAINERS_REUSE_ENABLE=false` is set in the job (`.env.test` never overrides existing variables) so every run gets fresh containers that the reaper removes. Container logs are dumped on failure. Replace `OWNER/REPO` in the badge above once the repo is on GitHub.
+Hosted runners do not have your local alpha image: set the repository variable `PGTEST_IMAGE` to a published image they can pull (and configure registry authentication if needed). Every CI run uses fresh containers. The workflow prints Docker logs on failure; no performance report artifacts are uploaded. Replace `OWNER/REPO` in the badge above once the repo is on GitHub.
 
 `VITEST_MAX_WORKERS` (number or percentage) overrides the `50%` default; CI pins `75%` (3 of 4 vCPUs — measured ~8 s faster per shard than 50%).
 

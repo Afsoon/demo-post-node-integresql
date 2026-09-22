@@ -22,6 +22,7 @@ export default defineConfig({
       "POLAR_ACCESS_TOKEN",
       "POLAR_PRODUCT_ID",
       "TEST_PG_POOL_MAX",
+      "PGTEST_DATABASE_URL",
       "PGTEST_SOCKET_DIR",
       "PGTEST_SOCKET_PORT",
     ),
@@ -30,6 +31,8 @@ export default defineConfig({
     // msw's cookie store probes `localStorage`; Node ≥ 25 warns about it being experimental
     execArgv: ["--disable-warning=ExperimentalWarning"],
     hookTimeout: 180_000,
+    // Allow managed containers to stop before global teardown completes.
+    teardownTimeout: 60_000,
     testTimeout: 30_000,
     isolate: false,
     // Postgres (Docker VM) and the workers share the same cores: more workers than half the CPUs
