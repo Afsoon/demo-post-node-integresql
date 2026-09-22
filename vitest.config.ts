@@ -15,7 +15,8 @@ export default defineConfig({
   test: {
     include: ["test/test/**/*.test.ts"],
     globalSetup: ["test/globalSetup.ts"],
-    env: pick("API_TOKEN", "POLAR_ENVIRONMENT", "POLAR_ACCESS_TOKEN", "POLAR_PRODUCT_ID", "TEST_PG_POOL_MAX"),
+    setupFiles: ["test/setup.ts"],
+    env: pick("API_TOKEN", "POLAR_ENVIRONMENT", "POLAR_ACCESS_TOKEN", "POLAR_PRODUCT_ID", "TEST_PG_POOL_MAX", "PGTEST_DATABASE_URL"),
     fileParallelism: true,
     pool: "threads",
     // msw's cookie store probes `localStorage`; Node ≥ 25 warns about it being experimental

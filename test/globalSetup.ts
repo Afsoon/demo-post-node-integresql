@@ -1,148 +1,152 @@
-import { IntegreSQLClient } from "@devoxa/integresql-client";
-import { Client } from "pg";
-import { GenericContainer, type StartedTestContainer, Wait } from "testcontainers";
+import { fileURLToPath } from "node:url";
+import {
+  GenericContainer,
+  getContainerRuntimeClient,
+  type StartedTestContainer,
+  Wait,
+} from "testcontainers";
 import type { TestProject } from "vitest/node";
 import { createDb } from "../src/infra/db/client.ts";
 import { runMigrations } from "../src/infra/db/migrate.ts";
-import type { IntegreSqlContext } from "./support/integresql.d.ts";
+import type { PgTestContext } from "./support/pgtest.d.ts";
+import { hashMigrationFiles } from "./support/migration-hash.ts";
 
 const TIMESCALE_IMAGE = "timescale/timescaledb:2.29.2-pg18";
-const INTEGRESQL_IMAGE = "ghcr.io/allaboutapps/integresql:v1.1.0";
+const PGTEST_IMAGE = "ghcr.io/afsoon/pgtest:sha-e34dc67955c5";
 
-const TIMESCALE_CONTAINER_PORT = 5432;
-const INTEGRESQL_CONTAINER_PORT = 5000;
+const TIMESCALE_PORT = 5432;
+const PGTEST_PORT = 6432;
 
-const TIMESCALE_ENV = { user: "metered", password: "metered", database: "metered" };
+const DATABASE_ENV = { user: "metered", password: "metered", database: "metered" };
 
-const TIMESCALE_SOCKET_VOLUME = "metered-test-pgsock";
 const TIMESCALE_SOCKET_DIR = "/var/run/postgresql";
-const socketMount = { source: TIMESCALE_SOCKET_VOLUME, target: TIMESCALE_SOCKET_DIR };
 const TIMESCALE_DATA_DIR = "/var/lib/postgresql";
 
-const SCHEMA_FILES = ["drizzle/**/*.sql", "drizzle/**/*.json"];
-
-const reuseEnabled = process.env.TESTCONTAINERS_REUSE_ENABLE === "true";
-
-let started: StartedTestContainer[] = [];
-
 export default async function setup(project: TestProject) {
-  const timescale = await startTimescale();
-  const host = timescale.getHost();
-  const port = timescale.getMappedPort(TIMESCALE_CONTAINER_PORT);
+  const reuseTimescale = process.env.TESTCONTAINERS_REUSE_ENABLE === "true";
+  const migrationHash = await hashMigrationFiles(
+    fileURLToPath(new URL("../drizzle/", import.meta.url)),
+  );
+  let timescale: StartedTestContainer | undefined;
+  let pgtest: StartedTestContainer | undefined;
+  let cleanupPromise: Promise<void> | undefined;
+  const cleanup = () =>
+    (cleanupPromise ??= (async () => {
+      try {
+        // Retain the stopped pgtest container for inspection. No report capture.
+        await pgtest?.stop({ timeout: 10_000, remove: false });
+      } finally {
+        if (!reuseTimescale) await timescale?.stop({ timeout: 10_000 });
+      }
+    })());
 
-  const integresql = await startIntegresql();
-  started = [integresql, timescale];
-
-  const url = `http://${integresql.getHost()}:${integresql.getMappedPort(INTEGRESQL_CONTAINER_PORT)}`;
-  const client = new IntegreSQLClient({ url });
-  const templateHash = await client.hashFiles(SCHEMA_FILES);
-
-  if (await hasStaleTemplates({ host, port }, templateHash)) {
-    await client.api.discardAllTemplates();
-  }
-
-  await client.initializeTemplate(templateHash, async (templateConfig) => {
-    const { db, pool } = createDb(
-      client.databaseConfigToConnectionUrl({ ...templateConfig, host, port }),
-    );
+  try {
+    timescale = await startTimescale(migrationHash, reuseTimescale);
+    const templateUrl = new URL("postgres://metered:metered@localhost/metered");
+    templateUrl.searchParams.set("host", timescale.getHost());
+    templateUrl.port = String(timescale.getMappedPort(TIMESCALE_PORT));
+    const { db, pool } = createDb(templateUrl.toString());
     try {
       await runMigrations(db);
     } finally {
       await pool.end();
     }
-  });
 
-  const context: IntegreSqlContext = { url, templateHash, host, port };
-  project.provide("integresql", context);
+    const runtime = await getContainerRuntimeClient();
+    const details = await runtime.container.inspect(runtime.container.getById(timescale.getId()));
+    const volume = details.Mounts.find((mount) => mount.Destination === TIMESCALE_SOCKET_DIR);
+    if (volume?.Type !== "volume" || !volume.Name) {
+      throw new Error("TimescaleDB did not expose its PostgreSQL socket volume");
+    }
+    pgtest = await startPgTest(volume.Name);
+    const context: PgTestContext = {
+      host: pgtest.getHost(),
+      port: pgtest.getMappedPort(PGTEST_PORT),
+    };
+    project.provide("pgtest", context);
+  } catch (error) {
+    try {
+      await cleanup();
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], "Test setup and cleanup failed");
+    }
+    throw error;
+  }
 }
 
-export async function teardown() {
-  if (reuseEnabled) return;
-  await Promise.all(started.map((c) => c.stop()));
+class TimescaleContainer extends GenericContainer {
+  constructor() {
+    super(TIMESCALE_IMAGE);
+    this.createOpts.Volumes = { [TIMESCALE_SOCKET_DIR]: {} };
+  }
 }
 
-function startTimescale() {
-  return (
-    new GenericContainer(TIMESCALE_IMAGE)
-      .withLabels({ "demo.blog.service": "metered", "demo.blog.role": "test-db" })
-      .withEnvironment({
-        POSTGRES_USER: TIMESCALE_ENV.user,
-        POSTGRES_PASSWORD: TIMESCALE_ENV.password,
-        POSTGRES_DB: TIMESCALE_ENV.database,
-      })
-      // Throughput over durability: this database is disposable.
-      .withCommand([
-        "postgres",
-        "-c",
-        "fsync=off",
-        "-c",
-        "synchronous_commit=off",
-        "-c",
-        "full_page_writes=off",
-        "-c",
-        "wal_level=minimal",
-        "-c",
-        "max_wal_senders=0",
-        "-c",
-        "archive_mode=off",
-        "-c",
-        "summarize_wal=off",
-        "-c",
-        "autovacuum=off",
-        "-c",
-        "timescaledb.max_background_workers=0",
-        "-c",
-        "random_page_cost=1.1",
-      ])
-      .withTmpFs({ [TIMESCALE_DATA_DIR]: "rw,noexec,nosuid,size=3g" })
-      .withBindMounts([socketMount])
-      .withExposedPorts(TIMESCALE_CONTAINER_PORT)
-      // The official entrypoint starts postgres twice (init, then for real): wait for the second "ready".
-      .withWaitStrategy(Wait.forLogMessage(/database system is ready to accept connections/, 2))
-      .withReuse()
-      .start()
-  );
-}
-
-function startIntegresql() {
-  return new GenericContainer(INTEGRESQL_IMAGE)
-    .withLabels({ "demo.blog.service": "metered", "demo.blog.role": "test-integresql" })
-    .withEnvironment({
-      INTEGRESQL_PORT: String(INTEGRESQL_CONTAINER_PORT),
-      INTEGRESQL_TEST_INITIAL_POOL_SIZE: "16",
-      INTEGRESQL_TEST_MAX_POOL_SIZE: "96",
-      PGHOST: TIMESCALE_SOCKET_DIR,
-      PGPORT: String(TIMESCALE_CONTAINER_PORT),
-      PGUSER: TIMESCALE_ENV.user,
-      PGPASSWORD: TIMESCALE_ENV.password,
-      PGDATABASE: TIMESCALE_ENV.database,
+function startTimescale(migrationHash: string, reuse: boolean) {
+  const container = new TimescaleContainer()
+    .withLabels({
+      "demo.blog.service": "metered",
+      "demo.blog.role": "test-db",
+      "demo.blog.migrations": migrationHash,
     })
-    .withBindMounts([socketMount])
-    .withExposedPorts(INTEGRESQL_CONTAINER_PORT)
-    .withWaitStrategy(Wait.forLogMessage(/http server started/))
+    .withEnvironment({
+      POSTGRES_USER: DATABASE_ENV.user,
+      POSTGRES_PASSWORD: DATABASE_ENV.password,
+      POSTGRES_DB: DATABASE_ENV.database,
+      POSTGRES_HOST_AUTH_METHOD: "trust",
+    })
+    // Throughput over durability: this database is disposable.
+    .withCommand([
+      "postgres",
+      "-c",
+      `unix_socket_directories=${TIMESCALE_SOCKET_DIR}`,
+      "-c",
+      "unix_socket_permissions=0777",
+      "-c",
+      "fsync=off",
+      "-c",
+      "synchronous_commit=off",
+      "-c",
+      "full_page_writes=off",
+      "-c",
+      "wal_level=minimal",
+      "-c",
+      "max_wal_senders=0",
+      "-c",
+      "archive_mode=off",
+      "-c",
+      "summarize_wal=off",
+      "-c",
+      "autovacuum=off",
+      "-c",
+      "timescaledb.max_background_workers=0",
+      "-c",
+      "random_page_cost=1.1",
+    ])
+    .withTmpFs({ [TIMESCALE_DATA_DIR]: "rw,noexec,nosuid,size=3g" })
+    .withExposedPorts(TIMESCALE_PORT)
+    // The official entrypoint starts postgres twice (init, then for real): wait for the second "ready".
+    .withWaitStrategy(Wait.forLogMessage(/database system is ready to accept connections/, 2));
+  if (reuse) container.withReuse();
+  return container.start();
+}
+
+function startPgTest(socketVolume: string) {
+  return new GenericContainer(PGTEST_IMAGE)
+    .withLabels({ "demo.blog.service": "metered", "demo.blog.role": "test-pgtest" })
+    .withEnvironment({
+      PGTEST_LISTEN_ADDR: "0.0.0.0",
+      PGTEST_LISTEN_PORT: String(PGTEST_PORT),
+      PGTEST_PG_HOST: TIMESCALE_SOCKET_DIR,
+      PGTEST_PG_PORT: String(TIMESCALE_PORT),
+      PGTEST_PG_USER: DATABASE_ENV.user,
+      PGTEST_PG_DATABASE: DATABASE_ENV.database,
+      PGTEST_POOL_INITIAL_SIZE: "16",
+      NO_COLOR: "1",
+    })
+    .withBindMounts([{ source: socketVolume, target: TIMESCALE_SOCKET_DIR }])
+    .withExposedPorts(PGTEST_PORT)
+    .withWaitStrategy(Wait.forLogMessage(/pgtest server listening/))
+    .withStartupTimeout(60_000)
     .withReuse()
     .start();
-}
-
-async function hasStaleTemplates(
-  { host, port }: { host: string; port: number },
-  currentHash: string,
-) {
-  const pg = new Client({
-    host,
-    port,
-    user: TIMESCALE_ENV.user,
-    password: TIMESCALE_ENV.password,
-    database: TIMESCALE_ENV.database,
-  });
-  await pg.connect();
-  try {
-    const { rows } = await pg.query<{ datname: string }>(
-      "SELECT datname FROM pg_database WHERE datname LIKE 'integresql_template_%' AND datname <> $1",
-      [`integresql_template_${currentHash}`],
-    );
-    return rows.length > 0;
-  } finally {
-    await pg.end();
-  }
 }
