@@ -76,15 +76,16 @@ src/
 drizzle/                   migrations (generated + custom SQL)
 ```
 
-## Tests (vitest + integresql)
+## Tests (Vitest + pgtest)
 
 ```sh
 pnpm test          # or pnpm test:watch
 ```
 
 - `vitest.config.ts` loads `.env.test` with Node's `process.loadEnvFile` (no dotenv) and forwards the keys to worker threads via `test.env`.
-- `test/globalSetup.ts` (runs once): starts TimescaleDB + [integresql](https://github.com/allaboutapps/integresql) with testcontainers (shared unix-socket volume, random host ports, `withReuse()` — set `TESTCONTAINERS_REUSE_ENABLE=true`, already in `.env.test`), hashes `drizzle/**` into a template hash and migrates the template database with `runMigrations` from `src/infra/db/migrate.ts`. Only serializable values are `provide`d to workers. The test database lives on **tmpfs** (RAM, never fills the Docker disk), runs with `timescaledb.max_background_workers=0` (no scheduler per cloned DB), integresql's pool is capped at 96 clones, and templates of older schema hashes are discarded automatically.
-- `test/support/database.ts` leases a clone of the template per test (`getTestDatabase`) and recreates it on release.
+- `test/globalSetup.ts` starts TimescaleDB (`timescale/timescaledb:2.29.2-pg18`), migrates its `metered` template, then starts `ghcr.io/afsoon/pgtest:sha-e34dc67955c5`. Node test clients connect to pgtest over TCP on a dynamically mapped port; pgtest connects to PostgreSQL through a shared Unix socket at `/var/run/postgresql/.s.PGSQL.5432`. The pgtest listener uses separate `PGTEST_LISTEN_ADDR` and `PGTEST_LISTEN_PORT` settings. Only serializable connection details are provided to workers.
+- `TESTCONTAINERS_REUSE_ENABLE=true` (the local default) reuses TimescaleDB and its socket volume. The migration hash is part of the reuse identity, so schema changes select a fresh container. PostgreSQL data lives on **tmpfs**, with `timescaledb.max_background_workers=0`. pgtest starts fresh each run and is stopped but retained for inspection afterward. There is no report or log-file capture.
+- `test/support/database.ts` creates a UUID lease per test and connects to database `metered/<lease-id>`. Release closes the test pool and calls `pgtest_release` through a shared client connected to the virtual `pgtest` control database. `test/setup.ts` closes the shared pool after each test file. Set `PGTEST_DATABASE_URL` to use an external TCP or Unix socket endpoint and skip pgtest container startup; TimescaleDB setup still runs.
 - `test/support/polar-mock.ts` — stateful in-memory double of the Polar endpoints we use (`/v1/customers/`, `/v1/events/ingest`, `/v1/orders/` + `/finalize`) served by an [MSW](https://mswjs.io) server. Local traffic (`http://127.0.0.1*`, `http://localhost*` → integresql API) passes through; any other URL throws (`onUnhandledRequest: 'error'`).
 - `test/support/api.ts` — `TestApi`: own DB clone + **own MSW server** + container wired exactly like dev (`createBillingProviderFromEnv` → real Polar SDK adapters with the fake credentials from `.env.test`) + in-process Hono app (`hono/testing` `testClient`, fully typed RPC, no listening port) + auth header. It implements `Symbol.asyncDispose` (closes MSW, releases the clone), so tests read:
 
@@ -114,9 +115,9 @@ test    matrix shard 1..3 → node_modules cache → image cache (docker load, p
         → containers → vitest run --shard=i/3 --reporter=blob --reporter=default → upload blob-i
 ```
 
-Each shard boots its own TimescaleDB + integresql on its runner. `node_modules` is cached by lockfile hash (install skipped on a hit; the pnpm store cache is the fallback) and the two images as one tarball keyed by `test/globalSetup.ts`. There is no merge job: shards fail the workflow on their own; for a single merged summary run `gh run download <run-id> -p 'blob-*' -D .vitest-reports && pnpm vitest run --merge-reports`. Change the shard count in `env.SHARDS` + the matrix. Local sharding is not used: on one machine it only doubles the setup for the same cores (measured slower).
+Each shard boots its own TimescaleDB + the pinned pgtest image on its runner. `node_modules` is cached by lockfile hash (install skipped on a hit; the pnpm store cache is the fallback) and the two images as one tarball keyed by `test/globalSetup.ts`. There is no merge job: shards fail the workflow on their own; for a single merged summary run `gh run download <run-id> -p 'blob-*' -D .vitest-reports && pnpm vitest run --merge-reports`. Change the shard count in `env.SHARDS` + the matrix. Local sharding is not used: on one machine it only doubles the setup for the same cores (measured slower).
 
-`ubuntu-latest` ships Docker, so testcontainers works unchanged; `TESTCONTAINERS_REUSE_ENABLE=false` is set in the job (`.env.test` never overrides existing variables) so every run gets fresh containers that the reaper removes. Container logs are dumped on failure. Replace `OWNER/REPO` in the badge above once the repo is on GitHub.
+`ubuntu-latest` ships Docker, so testcontainers works unchanged; `TESTCONTAINERS_REUSE_ENABLE=false` is set in the job (`.env.test` never overrides existing variables) so every CI run gets fresh containers; TimescaleDB is removed at teardown and pgtest remains stopped for inspection. Container logs are dumped on failure. Replace `OWNER/REPO` in the badge above once the repo is on GitHub.
 
 `VITEST_MAX_WORKERS` (number or percentage) overrides the `50%` default; CI pins `75%` (3 of 4 vCPUs — measured ~8 s faster per shard than 50%).
 

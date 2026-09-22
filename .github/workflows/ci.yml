@@ -53,7 +53,7 @@ jobs:
     env:
       CI: "true"
       # .env.test is loaded with process.loadEnvFile, which never overrides variables already set:
-      # fresh containers per run here, the testcontainers reaper cleans them up.
+      # Fresh TimescaleDB per run; pgtest remains stopped for failure diagnostics.
       TESTCONTAINERS_REUSE_ENABLE: "false"
       VITEST_MAX_WORKERS: "75%"
     steps:
@@ -90,10 +90,10 @@ jobs:
             docker load -i "$TARBALL"
           else
             docker pull timescale/timescaledb:2.29.2-pg18 &
-            docker pull ghcr.io/allaboutapps/integresql:v1.1.0 &
+            docker pull ghcr.io/afsoon/pgtest:sha-e34dc67955c5 &
             wait
             mkdir -p "$(dirname "$TARBALL")"
-            docker save -o "$TARBALL" timescale/timescaledb:2.29.2-pg18 ghcr.io/allaboutapps/integresql:v1.1.0
+            docker save -o "$TARBALL" timescale/timescaledb:2.29.2-pg18 ghcr.io/afsoon/pgtest:sha-e34dc67955c5
           fi
 
       - name: Run shard
@@ -110,6 +110,11 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 3
+
+      - name: Run all tests without sharding
+        # Run once across the matrix, after uploading the shard's blob report.
+        if: matrix.shard == 1
+        run: pnpm vitest run --reporter=default
 
       - name: Container logs (on failure)
         if: failure()
