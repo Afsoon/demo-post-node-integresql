@@ -90,10 +90,10 @@ jobs:
             docker load -i "$TARBALL"
           else
             docker pull timescale/timescaledb:2.29.2-pg18 &
-            docker pull ghcr.io/undefined-oss/pgtest:nightly-sha-03aa3dcbbb2c &
+            docker pull ghcr.io/undefined-oss/pgtest:nightly-sha-67c9c45d3744 &
             wait
             mkdir -p "$(dirname "$TARBALL")"
-            docker save -o "$TARBALL" timescale/timescaledb:2.29.2-pg18 ghcr.io/undefined-oss/pgtest:nightly-sha-03aa3dcbbb2c
+            docker save -o "$TARBALL" timescale/timescaledb:2.29.2-pg18 ghcr.io/undefined-oss/pgtest:nightly-sha-67c9c45d3744
           fi
 
       - name: Run shard
