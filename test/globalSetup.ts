@@ -12,7 +12,7 @@ import type { PgTestContext } from "./support/pgtest.d.ts";
 import { hashMigrationFiles } from "./support/migration-hash.ts";
 
 const TIMESCALE_IMAGE = "timescale/timescaledb:2.29.2-pg18";
-const PGTEST_IMAGE = "ghcr.io/undefined-oss/pgtest:nightly-sha-f7e6744da6a4";
+const PGTEST_IMAGE = "ghcr.io/undefined-oss/pgtest:nightly-sha-e4b103b81893";
 
 const TIMESCALE_PORT = 5432;
 const PGTEST_PORT = 6432;
