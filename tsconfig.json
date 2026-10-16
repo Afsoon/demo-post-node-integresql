@@ -19,6 +19,7 @@
   "include": [
     "src",
     "test",
-    "vitest.config.ts"
+    "vitest.config.ts",
+    "vitest.ci.config.ts"
   ]
 }

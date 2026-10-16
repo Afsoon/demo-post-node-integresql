@@ -9,9 +9,6 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  SHARDS: 3
-
 jobs:
   check:
     name: typecheck · migrations
@@ -42,84 +39,17 @@ jobs:
             echo "::error::drizzle schema and migrations are out of sync:"; git status --porcelain drizzle; exit 1
           fi
 
-  test:
+  test-all:
+    name: tests (full suite)
+    uses: ./.github/workflows/test.yml
+
+  test-sharded:
     name: tests (shard ${{ matrix.shard }}/3)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    needs: test-all
     strategy:
       fail-fast: false
       matrix:
         shard: [1, 2, 3]
-    env:
-      CI: "true"
-      # .env.test is loaded with process.loadEnvFile, which never overrides variables already set:
-      # Fresh TimescaleDB per run; pgtest remains stopped for failure diagnostics.
-      TESTCONTAINERS_REUSE_ENABLE: "false"
-      VITEST_MAX_WORKERS: "75%"
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .node-version
-          cache: pnpm
-      - name: Restore node_modules
-        id: node-modules
-        uses: actions/cache@v4
-        with:
-          path: node_modules
-          key: node-modules-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc') }}
-      - if: steps.node-modules.outputs.cache-hit != 'true'
-        run: pnpm install --frozen-lockfile
-
-      - name: Restore test images
-        # one tarball shared by every shard and push; the key follows the image tags pinned in
-        # test/globalSetup.ts, so bumping a tag invalidates it
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/test-images
-          key: test-images-${{ hashFiles('test/globalSetup.ts') }}
-
-      - name: Load or pull test images
-        # keeps image pulls out of vitest's globalSetup hookTimeout; on a miss the pulled images are
-        # saved so later runs (and the sibling shards' next run) can `docker load` them
-        env:
-          TARBALL: ${{ runner.temp }}/test-images/images.tar
-        run: |
-          if [ -f "$TARBALL" ]; then
-            docker load -i "$TARBALL"
-          else
-            docker pull timescale/timescaledb:2.29.2-pg18 &
-            docker pull ghcr.io/undefined-oss/pgtest:nightly-sha-e4b103b81893 &
-            wait
-            mkdir -p "$(dirname "$TARBALL")"
-            docker save -o "$TARBALL" timescale/timescaledb:2.29.2-pg18 ghcr.io/undefined-oss/pgtest:nightly-sha-e4b103b81893
-          fi
-
-      - name: Run shard
-        # blob reporter → .vitest-reports/blob-<i>-<n>.json (uploaded below, mergeable on demand);
-        # the default reporter keeps live output in this job's log
-        run: pnpm vitest run --shard=${{ matrix.shard }}/${{ env.SHARDS }} --reporter=blob --reporter=default
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: blob-${{ matrix.shard }}
-          path: .vitest-reports/
-          # upload-artifact ignores dot-prefixed paths unless told otherwise
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 3
-
-      - name: Run all tests without sharding
-        # Run once across the matrix, after uploading the shard's blob report.
-        if: matrix.shard == 1
-        run: pnpm vitest run --reporter=default
-
-      - name: Container logs (on failure)
-        if: failure()
-        run: |
-          docker ps -a --filter label=demo.blog.service=metered
-          for c in $(docker ps -aq --filter label=demo.blog.service=metered); do
-            echo "===== $c"; docker logs "$c" 2>&1 | tail -200
-          done
+    uses: ./.github/workflows/test.yml
+    with:
+      shard: ${{ matrix.shard }}

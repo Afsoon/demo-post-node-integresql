@@ -12,6 +12,9 @@
     "db:migrate": "nub --env-file-if-exists=.env.development --env-file-if-exists=.env.local src/infra/db/migrate.ts",
     "db:studio": "drizzle-kit studio",
     "test": "vitest run",
+    "test:ci": "vitest run --config vitest.ci.config.ts",
+    "test:db:migrate": "node test/prepare-ci-database.ts",
+    "test:db:wait": "node test/wait-for-pgtest.ts",
     "test:watch": "vitest"
   },
   "dependencies": {

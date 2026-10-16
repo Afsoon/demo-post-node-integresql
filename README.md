@@ -83,7 +83,7 @@ pnpm test          # or pnpm test:watch
 ```
 
 - `vitest.config.ts` loads `.env.test` with Node's `process.loadEnvFile` (no dotenv) and forwards the keys to worker threads via `test.env`.
-- `test/globalSetup.ts` starts TimescaleDB (`timescale/timescaledb:2.29.2-pg18`), migrates its `metered` template, then starts `ghcr.io/afsoon/pgtest:sha-e34dc67955c5`. Node test clients connect to pgtest over TCP on a dynamically mapped port; pgtest connects to PostgreSQL through a shared Unix socket at `/var/run/postgresql/.s.PGSQL.5432`. The pgtest listener uses separate `PGTEST_LISTEN_ADDR` and `PGTEST_LISTEN_PORT` settings. Only serializable connection details are provided to workers.
+- `test/globalSetup.ts` starts TimescaleDB (`timescale/timescaledb:2.29.2-pg18`), migrates its `metered` template, then starts `ghcr.io/undefined-oss/pgtest:nightly-sha-e4b103b81893`. Node test clients connect to pgtest over TCP on a dynamically mapped port; pgtest connects to PostgreSQL through a shared Unix socket at `/var/run/postgresql/.s.PGSQL.5432`. The pgtest listener uses separate `PGTEST_LISTEN_ADDR` and `PGTEST_LISTEN_PORT` settings. Only serializable connection details are provided to workers.
 - `TESTCONTAINERS_REUSE_ENABLE=true` (the local default) reuses TimescaleDB and its socket volume. The migration hash is part of the reuse identity, so schema changes select a fresh container. PostgreSQL data lives on **tmpfs**, with `timescaledb.max_background_workers=0`. pgtest starts fresh each run and is stopped but retained for inspection afterward. There is no report or log-file capture.
 - `test/support/database.ts` creates a UUID lease per test and connects to database `metered/<lease-id>`. Release closes the test pool and calls `pgtest_release` through a shared client connected to the virtual `pgtest` control database. `test/setup.ts` closes the shared pool after each test file. Set `PGTEST_DATABASE_URL` to use an external TCP or Unix socket endpoint and skip pgtest container startup; TimescaleDB setup still runs.
 - `test/support/polar-mock.ts` — stateful in-memory double of the Polar endpoints we use (`/v1/customers/`, `/v1/events/ingest`, `/v1/orders/` + `/finalize`) served by an [MSW](https://mswjs.io) server. Local traffic (`http://127.0.0.1*`, `http://localhost*` → integresql API) passes through; any other URL throws (`onUnhandledRequest: 'error'`).
@@ -107,19 +107,54 @@ it("creates a customer", async () => {
 
 ## CI
 
-`.github/workflows/ci.yml` runs on pushes to `main` and on pull requests, as two parallel lanes with no serial hops:
+`.github/workflows/ci.yml` runs on pushes to `main` and on pull requests:
 
 ```
-check   typecheck → drizzle drift check (no Docker)
-test    matrix shard 1..3 → node_modules cache → image cache (docker load, pull+save on miss)
-        → containers → vitest run --shard=i/3 --reporter=blob --reporter=default → upload blob-i
+check          typecheck → drizzle drift check (no Docker)
+test-all       full suite, no sharding
+  └─ success → test-sharded: shard 1/3, 2/3, 3/3 in parallel
 ```
 
-Each shard boots its own TimescaleDB + the pinned pgtest image on its runner. `node_modules` is cached by lockfile hash (install skipped on a hit; the pnpm store cache is the fallback) and the two images as one tarball keyed by `test/globalSetup.ts`. There is no merge job: shards fail the workflow on their own; for a single merged summary run `gh run download <run-id> -p 'blob-*' -D .vitest-reports && pnpm vitest run --merge-reports`. Change the shard count in `env.SHARDS` + the matrix. Local sharding is not used: on one machine it only doubles the setup for the same cores (measured slower).
+Both test modes call `.github/workflows/test.yml`. Each job starts its own containers from
+`docker-compose.test.yml`: TimescaleDB first, then migrations on the `metered` template,
+then pgtest. Migrating before pgtest starts ensures its clones contain the schema.
+The job waits for a PostgreSQL connection to pgtest before invoking Vitest.
+Container logs are printed on failure and containers and volumes are removed after every job.
 
-`ubuntu-latest` ships Docker, so testcontainers works unchanged; `TESTCONTAINERS_REUSE_ENABLE=false` is set in the job (`.env.test` never overrides existing variables) so every CI run gets fresh containers; TimescaleDB is removed at teardown and pgtest remains stopped for inspection. Container logs are dumped on failure. Replace `OWNER/REPO` in the badge above once the repo is on GitHub.
+`vitest.ci.config.ts` keeps the same tests, worker settings and fixtures as the local profile,
+but replaces `globalSetup` with an empty list. It never imports or starts Testcontainers.
+`PGTEST_DATABASE_URL` is required and points the fixtures at the already-running pgtest proxy;
+`TEST_DATABASE_URL` is used only by the migration script and points directly at TimescaleDB.
+`pnpm test` and `pnpm test:watch` still use the local Testcontainers profile.
 
-`VITEST_MAX_WORKERS` (number or percentage) overrides the `50%` default; CI pins `75%` (3 of 4 vCPUs — measured ~8 s faster per shard than 50%).
+To reproduce the CI setup locally (Docker and Node 26 required):
+
+```sh
+export COMPOSE_FILE=docker-compose.test.yml
+export TEST_DATABASE_URL=postgres://metered:metered@127.0.0.1:15432/metered
+export PGTEST_DATABASE_URL=postgres://metered:metered@127.0.0.1:16432/metered
+
+docker compose up -d --wait --wait-timeout 120 timescaledb
+pnpm test:db:migrate
+docker compose up -d --wait --wait-timeout 60 pgtest
+pnpm test:db:wait
+pnpm test:ci                  # all tests, no sharding
+pnpm test:ci --shard=1/3      # use 2/3 or 3/3 for the other shards
+
+docker compose down --volumes --remove-orphans
+```
+
+Start a fresh stack before migrating a changed schema; pgtest may already have clones of the old
+template. The test stack uses ports 15432 and 16432 and a separate Compose project and socket volume.
+
+`node_modules` is cached by lockfile hash and the Docker image tarball by the test Compose file hash.
+Each shard uploads a `blob-<index>` artifact. There is no merge job; each shard fails independently.
+For a merged report, download the artifacts with
+`gh run download <run-id> -p 'blob-*' -D .vitest-reports` and run
+`pnpm vitest run --merge-reports`.
+
+`VITEST_MAX_WORKERS` (number or percentage) overrides the `50%` default; CI uses `75%`.
+Replace `OWNER/REPO` in the badge above once the repo is on GitHub.
 
 ## Migrations
 

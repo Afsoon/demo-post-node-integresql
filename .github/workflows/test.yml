@@ -1,0 +1,93 @@
+name: Test with pgtest
+
+on:
+  workflow_call:
+    inputs:
+      shard:
+        description: "Shard index (1–3); 0 runs the full suite"
+        type: number
+        default: 0
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CI: "true"
+      VITEST_MAX_WORKERS: "75%"
+      COMPOSE_FILE: docker-compose.test.yml
+      TEST_DATABASE_URL: postgres://metered:metered@127.0.0.1:15432/metered
+      PGTEST_DATABASE_URL: postgres://metered:metered@127.0.0.1:16432/metered
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - name: Restore node_modules
+        id: node-modules
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: node-modules-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc') }}
+      - if: steps.node-modules.outputs.cache-hit != 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: Restore test images
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/test-images
+          key: test-images-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('docker-compose.test.yml') }}
+
+      - name: Load or pull test images
+        env:
+          TARBALL: ${{ runner.temp }}/test-images/images.tar
+        run: |
+          if [ -f "$TARBALL" ]; then
+            docker load -i "$TARBALL"
+          else
+            docker compose pull
+            mkdir -p "$(dirname "$TARBALL")"
+            docker compose config --images | xargs docker save -o "$TARBALL"
+          fi
+
+      - name: Start TimescaleDB
+        run: docker compose up -d --wait --wait-timeout 120 timescaledb
+
+      - name: Migrate the template before pgtest starts cloning
+        run: pnpm test:db:migrate
+
+      - name: Start pgtest and wait for connections
+        run: |
+          docker compose up -d --wait --wait-timeout 60 pgtest
+          pnpm test:db:wait
+
+      - name: Run all tests without sharding
+        if: inputs.shard == 0
+        run: pnpm test:ci --reporter=default
+
+      - name: Run shard
+        if: inputs.shard != 0
+        env:
+          SHARD: ${{ inputs.shard }}
+        run: pnpm test:ci --shard="$SHARD/3" --reporter=blob --reporter=default
+
+      - uses: actions/upload-artifact@v4
+        if: always() && inputs.shard != 0
+        with:
+          name: blob-${{ inputs.shard }}
+          path: .vitest-reports/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Container logs (on failure)
+        if: failure()
+        run: |
+          docker compose ps -a
+          docker compose logs --no-color --tail=200
+
+      - name: Stop test containers and remove their volumes
+        if: always()
+        run: docker compose down --volumes --remove-orphans

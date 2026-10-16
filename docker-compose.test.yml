@@ -1,0 +1,71 @@
+name: metered-ci-tests
+
+services:
+  timescaledb:
+    image: timescale/timescaledb:2.29.2-pg18
+    environment:
+      POSTGRES_USER: metered
+      POSTGRES_PASSWORD: metered
+      POSTGRES_DB: metered
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "127.0.0.1:15432:5432"
+    volumes:
+      - pg-socket:/var/run/postgresql
+    tmpfs:
+      - /var/lib/postgresql:rw,noexec,nosuid,size=3g
+    # Disposable test data: match the local Testcontainers performance settings.
+    command:
+      - postgres
+      - -c
+      - unix_socket_directories=/var/run/postgresql
+      - -c
+      - unix_socket_permissions=0777
+      - -c
+      - fsync=off
+      - -c
+      - synchronous_commit=off
+      - -c
+      - full_page_writes=off
+      - -c
+      - wal_level=minimal
+      - -c
+      - max_wal_senders=0
+      - -c
+      - archive_mode=off
+      - -c
+      - summarize_wal=off
+      - -c
+      - autovacuum=off
+      - -c
+      - timescaledb.max_background_workers=0
+      - -c
+      - random_page_cost=1.1
+    healthcheck:
+      # TCP is available only after the entrypoint's temporary init server exits.
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "metered", "-d", "metered"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  pgtest:
+    image: ghcr.io/undefined-oss/pgtest:nightly-sha-e4b103b81893
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    environment:
+      PGTEST_LISTEN_ADDR: 0.0.0.0
+      PGTEST_LISTEN_PORT: "6432"
+      PGTEST_PG_HOST: /var/run/postgresql
+      PGTEST_PG_PORT: "5432"
+      PGTEST_PG_USER: metered
+      PGTEST_PG_DATABASE: metered
+      PGTEST_POOL_INITIAL_SIZE: "16"
+      NO_COLOR: "1"
+    ports:
+      - "127.0.0.1:16432:6432"
+    volumes:
+      - pg-socket:/var/run/postgresql
+
+volumes:
+  pg-socket:
